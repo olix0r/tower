@@ -1,6 +1,7 @@
 use log::trace;
 use futures::{try_ready, Async, Poll};
-use std::{fmt, ops};
+use std::{hash::Hash, fmt, ops};
+use std::marker::PhantomData;
 use tower_discover::{Change, Discover};
 use tower_service::Service;
 
@@ -20,7 +21,10 @@ pub struct Weighted<T> {
 }
 
 #[derive(Debug)]
-pub struct WithWeighted<T>(T);
+pub struct WithWeighted<T, K> {
+    inner: T,
+    _marker: PhantomData<K>,
+}
 
 pub trait HasWeight {
     fn weight(&self) -> Weight;
@@ -85,31 +89,31 @@ impl<R, S: Service<R>> Service<R> for Weighted<S> {
 
 // === impl WithWeighted ===
 
-impl<D> From<D> for WithWeighted<D>
+impl<D, K> From<D> for WithWeighted<D, K>
 where
-    D: Discover,
-    D::Key: HasWeight,
+    D: Discover<Key = Weighted<K>>,
+    K: Hash + Eq,
 {
-    fn from(d: D) -> Self {
-        WithWeighted(d)
+    fn from(inner: D) -> Self {
+        WithWeighted { inner, _marker: PhantomData }
     }
 }
 
-impl<D> Discover for WithWeighted<D>
+impl<D, K> Discover for WithWeighted<D, K>
 where
-    D: Discover,
-    D::Key: HasWeight,
+    D: Discover<Key = Weighted<K>>,
+    K: Hash + Eq,
 {
-    type Key = D::Key;
+    type Key = K;
     type Error = D::Error;
     type Service = Weighted<D::Service>;
 
-    fn poll(&mut self) -> Poll<Change<D::Key, Self::Service>, Self::Error> {
-        let c = match try_ready!(self.0.poll()) {
-            Change::Remove(k) => Change::Remove(k),
+    fn poll(&mut self) -> Poll<Change<K, Self::Service>, Self::Error> {
+        let c = match try_ready!(self.inner.poll()) {
+            Change::Remove(k) => Change::Remove(k.inner),
             Change::Insert(k, svc) => {
-                let w = k.weight();
-                Change::Insert(k, Weighted::new(svc, w))
+                let (inner, weight) = k.into_parts();
+                Change::Insert(inner, Weighted::new(svc, weight))
             }
         };
 
