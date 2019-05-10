@@ -121,6 +121,7 @@ where
 
 impl Weight {
     pub const ZERO: Weight = Weight(0);
+    pub const MIN: Weight = Weight(1);
     pub const UNIT: Weight = Weight(10_000);
     pub const MAX: Weight = Weight(std::u32::MAX);
 }
@@ -133,13 +134,17 @@ impl Default for Weight {
 
 impl From<f64> for Weight {
     fn from(w: f64) -> Self {
-        if w < 0.0 || w == std::f64::NAN {
-            Self::ZERO
-        } else if w == std::f64::INFINITY {
-            Self::MAX
-        } else {
-            Weight((w * 10_000.0).round() as u32)
+        if w <= 0.0 || w.is_nan() {
+            return Self::ZERO;
         }
+        if w == std::f64::INFINITY {
+            return Self::MAX;
+        }
+        let w = (w * 10_000.0) as u32;
+        if w == 0 {
+            return Self::MIN;
+        }
+        Weight(w)
     }
 }
 
@@ -169,6 +174,19 @@ impl ops::Div<Weight> for usize {
     fn div(self, w: Weight) -> f64 {
         self as f64 / w
     }
+}
+
+#[test]
+fn into() {
+    assert_eq!(Weight::from(std::f64::INFINITY), Weight::MAX);
+    assert_eq!(Weight::from(std::f64::NAN), Weight::ZERO);
+    assert_eq!(Weight::from(0.0), Weight::ZERO);
+    assert_eq!(Weight::from(1.0), Weight::UNIT);
+    assert_eq!(Weight::from(0.1), Weight(1_000));
+    assert_eq!(Weight::from(0.01), Weight(100));
+    assert_eq!(Weight::from(0.001), Weight(10));
+    assert_eq!(Weight::from(0.0001), Weight::MIN);
+    assert_eq!(Weight::from(0.00001), Weight::MIN);
 }
 
 #[test]
