@@ -1,7 +1,7 @@
-use log::trace;
 use futures::{try_ready, Async, Poll};
-use std::{hash::Hash, fmt, ops};
+use log::trace;
 use std::marker::PhantomData;
+use std::{fmt, hash::Hash, ops};
 use tower_discover::{Change, Discover};
 use tower_service::Service;
 
@@ -95,7 +95,10 @@ where
     K: Hash + Eq,
 {
     fn from(inner: D) -> Self {
-        WithWeighted { inner, _marker: PhantomData }
+        WithWeighted {
+            inner,
+            _marker: PhantomData,
+        }
     }
 }
 
