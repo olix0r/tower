@@ -181,7 +181,7 @@ fn gen_disco<I: Iterator<Item = (Duration, lb::Weight)>>(
 
 fn run<D>(
     name: &'static str,
-    lb: lb::P2CBalance<D, usize, D::Service>,
+    lb: lb::P2CBalance<D, usize>,
 ) -> impl Future<Item = (), Error = ()>
 where
     D: Discover<Key = Key> + Send + 'static,

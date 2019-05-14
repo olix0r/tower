@@ -29,7 +29,7 @@ use self::{error::Error, future::ResponseFuture};
 
 /// Balances requests across a set of inner services.
 #[derive(Debug)]
-pub struct P2CBalance<D, K, S>
+pub struct P2CBalance<D: Discover<Key = Weighted<K>>, K>
 where
     K: cmp::Eq + hash::Hash,
 {
@@ -44,7 +44,7 @@ where
     /// request.
     dispatched_ready: Option<Coordinate>,
 
-    endpoints_by_weight: IndexMap<Weight, IndexMap<K, S>>,
+    endpoints_by_weight: IndexMap<Weight, IndexMap<K, D::Service>>,
     weighted_index: Option<WeightedIndex<usize>>,
 
     rng: SmallRng,
@@ -60,7 +60,7 @@ struct Coordinate {
 
 // ===== impl Balance =====
 
-impl<D, K> P2CBalance<D, K, D::Service>
+impl<D, K> P2CBalance<D, K>
 where
     K: hash::Hash + cmp::Eq,
     D: Discover<Key = Weighted<K>>,
@@ -199,7 +199,7 @@ where
     }
 }
 
-impl<D, K, Svc, Request> Service<Request> for P2CBalance<D, K, Svc>
+impl<D, K, Svc, Request> Service<Request> for P2CBalance<D, K>
 where
     K: cmp::Eq + hash::Hash,
     D: Discover<Key = Weighted<K>, Service = Svc>,
