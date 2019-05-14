@@ -1,5 +1,5 @@
 use futures::{try_ready, Async, Poll};
-use std::{ops, sync::Arc};
+use std::sync::Arc;
 use tower_discover::{Change, Discover};
 use tower_service::Service;
 
@@ -32,16 +32,6 @@ pub struct Count(usize);
 
 #[derive(Debug)]
 pub struct Handle(RefCount);
-
-// ===== impl Count =====
-
-impl ops::Div<Weight> for Count {
-    type Output = f64;
-
-    fn div(self, weight: Weight) -> f64 {
-        self.0 / weight
-    }
-}
 
 // ===== impl PendingRequests =====
 

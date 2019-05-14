@@ -11,7 +11,7 @@ use crate::Load;
 ///
 /// Lesser-weighted nodes receive less traffic than heavier-weighted nodes.
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq, Ord, Hash)]
-pub struct Weight(u32);
+pub struct Weight(usize);
 
 /// A Service, that implements Load, that
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq, Ord, Hash)]
@@ -130,7 +130,7 @@ impl Weight {
     pub const ZERO: Weight = Weight(0);
     pub const MIN: Weight = Weight(1);
     pub const UNIT: Weight = Weight(10_000);
-    pub const MAX: Weight = Weight(std::u32::MAX);
+    pub const MAX: Weight = Weight(std::usize::MAX);
 }
 
 impl Default for Weight {
@@ -139,47 +139,17 @@ impl Default for Weight {
     }
 }
 
-impl From<f64> for Weight {
-    fn from(w: f64) -> Self {
-        if w <= 0.0 || w.is_nan() {
-            return Self::ZERO;
-        }
-        if w == std::f64::INFINITY {
-            return Self::MAX;
-        }
-        let w = (w * 10_000.0) as u32;
-        if w == 0 {
-            return Self::MIN;
-        }
-        Weight(w)
+impl Into<usize> for Weight {
+    fn into(self) -> usize {
+        self.0
     }
 }
 
-impl Into<f64> for Weight {
-    fn into(self) -> f64 {
-        let v: f64 = self.0.into();
-        v / 10_000.0
-    }
-}
+impl ops::Add<Weight> for Weight {
+    type Output = Weight;
 
-impl ops::Div<Weight> for f64 {
-    type Output = f64;
-
-    fn div(self, w: Weight) -> f64 {
-        if w == Weight::ZERO {
-            ::std::f64::INFINITY
-        } else {
-            let w: f64 = w.into();
-            self / w
-        }
-    }
-}
-
-impl ops::Div<Weight> for usize {
-    type Output = f64;
-
-    fn div(self, w: Weight) -> f64 {
-        self as f64 / w
+    fn add(self, w: Weight) -> Weight {
+        Weight(self.0.saturating_add(w.0))
     }
 }
 

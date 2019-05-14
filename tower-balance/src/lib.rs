@@ -5,27 +5,23 @@
 extern crate quickcheck;
 
 use futures::{Async, Poll};
-use indexmap::{IndexMap, IndexSet};
-use log::{debug, trace};
-use rand::{rngs::SmallRng, SeedableRng};
+use indexmap::IndexMap;
+use log::debug;
+use rand::{rngs::SmallRng, FromEntropy, Rng, SeedableRng};
 use std::{cmp, fmt, hash};
-use tower_discover::Discover;
+use tower_discover::{Change, Discover};
 use tower_service::Service;
 
-pub mod choose;
 pub mod error;
 pub mod future;
 pub mod load;
-pub mod pool;
 mod weight;
 
 #[cfg(test)]
 mod test;
 
 pub use self::{
-    choose::Choose,
     load::Load,
-    pool::Pool,
     weight::{HasWeight, Weight, Weighted, WithWeighted},
 };
 
@@ -33,27 +29,42 @@ use self::{error::Error, future::ResponseFuture};
 
 /// Balances requests across a set of inner services.
 #[derive(Debug)]
-pub struct P2CBalance<D, K, S> {
+pub struct P2CBalance<D, K, S>
+where
+    K: cmp::Eq + hash::Hash,
+{
     /// Provides endpoints from service discovery.
     discover: D,
 
     /// Holds an index into `ready`, indicating the service that has been chosen to
     /// dispatch the next request.
-    chosen_ready_index: Option<(Weight, usize)>,
+    chosen_ready: Option<Coordinate>,
 
     /// Holds an index into `ready`, indicating the service that dispatched the last
     /// request.
-    dispatched_ready_index: Option<(Weight, usize)>,
+    dispatched_ready: Option<Coordinate>,
 
     endpoints_by_weight: IndexMap<Weight, IndexMap<K, S>>,
+    total_weight: usize,
+
+    rng: SmallRng,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Coordinate {
+    /// Index into the `endpoints_by_weight` array.
+    widx: usize,
+    /// Index into the per-weight endpoints array.
+    eidx: usize,
 }
 
 // ===== impl Balance =====
 
 impl<D, K> P2CBalance<D, K, D::Service>
 where
-    D: Discover<Key = Weighted<K>>,
     K: hash::Hash + cmp::Eq,
+    D: Discover<Key = Weighted<K>>,
+    D::Error: Into<Error>,
     D::Service: Load,
     <D::Service as Load>::Metric: PartialOrd + fmt::Debug,
 {
@@ -74,40 +85,54 @@ where
     /// [p2c]: http://www.eecs.harvard.edu/~michaelm/postscripts/handbook2001.pdf
     pub fn new(discover: D) -> Self {
         Self {
+            rng: SmallRng::from_entropy(),
             discover,
-            chosen_ready_index: None,
-            dispatched_ready_index: None,
-            ready: IndexMap::default(),
-            not_ready: IndexMap::default(),
+            chosen_ready: None,
+            dispatched_ready: None,
+            endpoints_by_weight: IndexMap::default(),
+            total_weight: 0,
         }
     }
 
     /// Initializes a P2C load balancer from the provided randomization source.
     ///
     /// This may be preferable when an application instantiates many balancers.
-    pub fn new_with_rng<R: rand::Rng>(discover: D, rng: &mut R) -> Result<Self, rand::Error> {
+    pub fn new_with_rng<R: Rng>(discover: D, rng: &mut R) -> Result<Self, rand::Error> {
         let rng = SmallRng::from_rng(rng)?;
-        Ok(Self::new(discover, choose::PowerOfTwoChoices::new(rng)))
+        Ok(Self {
+            rng,
+            discover,
+            chosen_ready: None,
+            dispatched_ready: None,
+            endpoints_by_weight: IndexMap::default(),
+            total_weight: 0,
+        })
     }
 
     // Finds the coordinates of `key` within the current `endpoints_by_weight` structure.
     //
-    // THese coordinates are invalid once endpoints_by_weight is altered.
-    fn find_indices(&self, key: &K) -> Option<(usize, usize)> {
-        for (widx, _, eps) in self.endpoints_by_weight.iter().enumerate()
+    // These coordinates are invalid once endpoints_by_weight is altered.
+    fn find(&self, key: &K) -> Option<Coordinate> {
+        for (widx, (_, eps)) in self.endpoints_by_weight.iter().enumerate() {
             if let Some((eidx, _, _)) = eps.get_full(key) {
-                return Some((widx, eidx));
+                return Some(Coordinate { widx, eidx });
             }
         }
         None
     }
 
+    fn locate_mut(&mut self, coord: &Coordinate) -> Option<&mut D::Service> {
+        self.endpoints_by_weight
+            .get_index_mut(coord.widx)
+            .and_then(move |(_, eps)| eps.get_index_mut(coord.eidx).map(|(_, svc)| svc))
+    }
+
     fn remove_endpoint(&mut self, key: &K) -> Option<D::Service> {
-        let (widx, eidx) = self.find_indices(key)?;
+        let Coordinate { widx, eidx } = self.find(key)?;
 
         let (ep, empty) = {
-            let ref mut eps = self.endpoints_by_weight.get_index_mut(widx)?;
-            let ep = eps.swap_remove_index(eidx)?;
+            let (_, ref mut eps) = self.endpoints_by_weight.get_index_mut(widx)?;
+            let (_, ep) = eps.swap_remove_index(eidx)?;
             (ep, eps.is_empty())
         };
         if empty {
@@ -122,57 +147,25 @@ where
     /// Removals may alter the order of either `ready` or `not_ready`.
     fn update_from_discover(&mut self) -> Result<(), error::Balance> {
         debug!("updating from discover");
-        use tower_discover::Change::*;
 
         loop {
-            match try_ready(self.discover.poll().map_err(|e| error::Balance(e.into()))) {
-                Insert(weighted, svc) => {
+            match self.discover.poll().map_err(|e| error::Balance(e.into()))? {
+                Async::NotReady => return Ok(()),
+
+                Async::Ready(Change::Insert(weighted, svc)) => {
                     let (key, weight) = weighted.into_parts();
                     drop(self.remove_endpoint(&key));
 
-                    self.endpoints
+                    self.endpoints_by_weight
                         .entry(weight)
                         .or_insert_with(|| IndexMap::default())
                         .insert(key, svc);
                 }
 
-                Remove(weighted) => {
+                Async::Ready(Change::Remove(weighted)) => {
                     let (key, _) = weighted.into_parts();
                     drop(self.remove_endpoint(&key));
                 }
-            }
-        }
-    }
-
-    /// Chooses the next service to which a request will be dispatched.
-    ///
-    /// Ensures that .
-    fn choose_and_poll_ready<Request>(
-        &mut self,
-    ) -> Poll<(), <D::Service as Service<Request>>::Error>
-    where
-        D::Service: Service<Request>,
-    {
-        loop {
-            let n = self.ready.len();
-            debug!("choosing from {} replicas", n);
-            let idx = match n {
-                0 => return Ok(Async::NotReady),
-                1 => 0,
-                _ => {
-                    let replicas = choose::replicas(&self.ready).expect("too few replicas");
-                    self.choose.choose(replicas)
-                }
-            };
-
-            // XXX Should we handle per-endpoint errors?
-            if self
-                .poll_ready_index(idx)
-                .expect("invalid ready index")?
-                .is_ready()
-            {
-                self.chosen_ready_index = Some(idx);
-                return Ok(Async::Ready(()));
             }
         }
     }
@@ -180,39 +173,45 @@ where
 
 impl<D, K, Svc, Request> Service<Request> for P2CBalance<D, K, Svc>
 where
+    K: cmp::Eq + hash::Hash,
     D: Discover<Key = Weighted<K>, Service = Svc>,
     D::Error: Into<Error>,
-    Svc: Service<Request>,
+    Svc: Service<Request> + Load,
     Svc::Error: Into<Error>,
+    Svc::Metric: PartialOrd + fmt::Debug,
 {
-    type Response = Svc::Response;
+    type Response = <D::Service as Service<Request>>::Response;
     type Error = Error;
-    type Future = ResponseFuture<Svc::Future>;
+    type Future = ResponseFuture<<D::Service as Service<Request>>::Future>;
 
     /// Prepares the balancer to process a request.
     ///
-    /// When `Async::Ready` is returned, `chosen_ready_index` is set with a valid index
+    /// When `Async::Ready` is returned, `chosen_ready` is set with a valid index
     /// into `ready` referring to a `Service` that is ready to disptach a request.
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
         // Clear before `ready` is altered.
-        self.chosen_ready_index = None;
+        self.chosen_ready = None;
 
-        // Update `not_ready` and `ready`.
         self.update_from_discover()?;
 
-        // Choose the next service to be used by `call`.
-        self.choose_and_poll_ready().map_err(Into::into)
+        let total_weight: usize = self.total_weight.into();
+        for _ in 0..3 {
+            let iw = self.rng.gen::<usize>() % total_weight;
+            let jw = self.rng.gen::<usize>() % total_weight;
+
+
+        }
+
+        Ok(Async::NotReady)
     }
 
     fn call(&mut self, request: Request) -> Self::Future {
-        let idx = self.chosen_ready_index.take().expect("not ready");
-        let (_, svc) = self
-            .ready
-            .get_index_mut(idx)
-            .expect("invalid chosen ready index");
-        self.dispatched_ready_index = Some(idx);
-
-        let rsp = svc.call(request);
+        let coord = self.chosen_ready.take().expect("not ready");
+        let rsp = {
+            let ref mut svc = self.locate_mut(&coord).expect("invalid chosen ready index");
+            svc.call(request)
+        };
+        self.dispatched_ready = Some(coord);
         ResponseFuture::new(rsp)
     }
 }

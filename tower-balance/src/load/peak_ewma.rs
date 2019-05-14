@@ -1,7 +1,6 @@
 use futures::{try_ready, Async, Poll};
 use log::trace;
 use std::{
-    ops,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -284,16 +283,6 @@ impl Drop for Handle {
         if let Ok(mut rtt) = self.rtt_estimate.lock() {
             rtt.update(self.sent_at, recv_at, self.decay_ns);
         }
-    }
-}
-
-// ===== impl Cost =====
-
-impl ops::Div<Weight> for Cost {
-    type Output = f64;
-
-    fn div(self, w: Weight) -> f64 {
-        self.0 / w
     }
 }
 
