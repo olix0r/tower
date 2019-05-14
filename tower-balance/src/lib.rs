@@ -38,11 +38,7 @@ where
 
     /// Holds an index into `ready`, indicating the service that has been chosen to
     /// dispatch the next request.
-    chosen_ready: Option<Coordinate>,
-
-    /// Holds an index into `ready`, indicating the service that dispatched the last
-    /// request.
-    dispatched_ready: Option<Coordinate>,
+    chosen: Option<Coordinate>,
 
     endpoints_by_weight: IndexMap<Weight, IndexMap<K, D::Service>>,
     weighted_index: Option<WeightedIndex<usize>>,
@@ -64,7 +60,6 @@ impl<D, K> P2CBalance<D, K>
 where
     K: hash::Hash + cmp::Eq,
     D: Discover<Key = Weighted<K>>,
-    D::Error: Into<Error>,
 {
     /// Chooses services using the [Power of Two Choices][p2c].
     ///
@@ -85,8 +80,7 @@ where
         Self {
             rng: SmallRng::from_entropy(),
             discover,
-            chosen_ready: None,
-            dispatched_ready: None,
+            chosen: None,
             endpoints_by_weight: IndexMap::default(),
             weighted_index: None,
         }
@@ -100,8 +94,7 @@ where
         Ok(Self {
             rng,
             discover,
-            chosen_ready: None,
-            dispatched_ready: None,
+            chosen: None,
             endpoints_by_weight: IndexMap::default(),
             weighted_index: None,
         })
@@ -141,7 +134,10 @@ where
     /// Polls `discover` for updates, adding new items to `not_ready`.
     ///
     /// Removals may alter the order of either `ready` or `not_ready`.
-    fn update_from_discover(&mut self) -> Result<(), error::Balance> {
+    fn update_from_discover(&mut self) -> Result<(), error::Balance>
+    where
+        D::Error: Into<Error>,
+    {
         debug!("updating from discover");
 
         loop {
@@ -176,7 +172,10 @@ where
         }
     }
 
-    fn select_endpoint<Svc, Req>(&mut self, widx: usize) -> Result<(Coordinate, Option<<D::Service as Load>::Metric>), Error>
+    fn select_endpoint<Svc, Req>(
+        &mut self,
+        widx: usize,
+    ) -> Result<(Coordinate, Option<<D::Service as Load>::Metric>), Error>
     where
         D: Discover<Service = Svc>,
         Svc: Service<Req> + Load,
@@ -214,13 +213,13 @@ where
 
     /// Prepares the balancer to process a request.
     ///
-    /// When `Async::Ready` is returned, `chosen_ready` is set with a valid index
+    /// When `Async::Ready` is returned, `chosen` is set with a valid index
     /// into `ready` referring to a `Service` that is ready to disptach a request.
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
         use rand::distributions::Distribution;
 
         // Clear before `ready` is altered.
-        self.chosen_ready = None;
+        self.chosen = None;
 
         self.update_from_discover()?;
 
@@ -239,7 +238,7 @@ where
         let (a, aload) = self.select_endpoint(widx)?;
         let (b, bload) = self.select_endpoint(widx)?;
         trace!("a={:?} load={:?}; b={:?} load={:?}", a, aload, b, bload);
-        self.chosen_ready = match (aload, bload) {
+        self.chosen = match (aload, bload) {
             (Some(aload), Some(bload)) => {
                 if aload <= bload {
                     Some(a)
@@ -252,8 +251,8 @@ where
             (None, None) => None,
         };
 
-        trace!("chosen: {:?}", self.chosen_ready);
-        if self.chosen_ready.is_some() {
+        trace!("chosen: {:?}", self.chosen);
+        if self.chosen.is_some() {
             return Ok(Async::Ready(()));
         }
 
@@ -261,12 +260,11 @@ where
     }
 
     fn call(&mut self, request: Request) -> Self::Future {
-        let coord = self.chosen_ready.take().expect("not ready");
+        let coord = self.chosen.take().expect("not ready");
         let rsp = {
             let ref mut svc = self.locate_mut(coord).expect("invalid chosen ready index");
             svc.call(request)
         };
-        self.dispatched_ready = Some(coord);
         ResponseFuture::new(rsp)
     }
 }
