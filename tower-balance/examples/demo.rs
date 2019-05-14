@@ -3,9 +3,9 @@
 use env_logger;
 use futures::{future, stream, Async, Future, Poll, Stream};
 use hdrsample::Histogram;
+use log::trace;
 use rand::{self, Rng};
 use std::time::{Duration, Instant};
-use std::{cmp, hash};
 use tokio::{runtime, timer};
 use tower::{
     discover::{Change, Discover},
@@ -14,29 +14,16 @@ use tower::{
 };
 use tower_balance as lb;
 
-const REQUESTS: usize = 50_000;
-const CONCURRENCY: usize = 500;
-const DEFAULT_RTT: Duration = Duration::from_millis(30);
-static ENDPOINT_CAPACITY: usize = CONCURRENCY;
-static MAX_ENDPOINT_LATENCIES: [Duration; 10] = [
-    Duration::from_millis(1),
-    Duration::from_millis(5),
-    Duration::from_millis(10),
-    Duration::from_millis(10),
-    Duration::from_millis(10),
-    Duration::from_millis(100),
-    Duration::from_millis(100),
-    Duration::from_millis(100),
-    Duration::from_millis(500),
-    Duration::from_millis(1000),
-];
-static WEIGHTS: [f64; 10] = [1.0, 1.0, 1.0, 0.5, 1.5, 0.5, 1.5, 1.0, 1.0, 1.0];
-
 struct Summary {
     latencies: Histogram<u64>,
     start: Instant,
     count_by_instance: [usize; 10],
 }
+
+const REQUESTS: usize = 50_000;
+const CONCURRENCY: usize = 50;
+const DEFAULT_RTT: Duration = Duration::from_millis(30);
+static ENDPOINT_CAPACITY: usize = CONCURRENCY;
 
 fn main() {
     env_logger::init();
@@ -44,49 +31,72 @@ fn main() {
     println!("REQUESTS={}", REQUESTS);
     println!("CONCURRENCY={}", CONCURRENCY);
     println!("ENDPOINT_CAPACITY={}", ENDPOINT_CAPACITY);
-    print!("MAX_ENDPOINT_LATENCIES=[");
-    for max in &MAX_ENDPOINT_LATENCIES {
-        let l = max.as_secs() * 1_000 + u64::from(max.subsec_nanos() / 1_000 / 1_000);
-        print!("{}ms, ", l);
-    }
-    println!("]");
+
+    // Show weighted behavior first...
+
+    static WEIGHTS: [lb::Weight; 10] = [
+        lb::Weight(5_000),
+        lb::Weight(5_000),
+        lb::Weight(10_000),
+        lb::Weight(10_000),
+        lb::Weight(10_000),
+        lb::Weight(10_000),
+        lb::Weight(10_000),
+        lb::Weight(10_000),
+        lb::Weight(85_000),
+        lb::Weight(85_000),
+    ];
+
     print!("WEIGHTS=[");
-    for w in &WEIGHTS {
+    for lb::Weight(w) in &WEIGHTS {
         print!("{}, ", w);
     }
     println!("]");
 
-    let mut rt = runtime::Runtime::new().unwrap();
-
-    // Show weighted behavior first...
-
     let fut = future::lazy(move || {
         let decay = Duration::from_secs(10);
-        let d = gen_disco();
-        let pe = lb::Balance::p2c(lb::WithWeighted::from(lb::load::WithPeakEwma::new(
+        let d = gen_disco(WEIGHTS.iter().map(|w| (Duration::from_millis(10), *w)));
+        let pe = lb::P2CBalance::new(lb::load::WithPeakEwma::new(
             d,
             DEFAULT_RTT,
             decay,
             lb::load::NoInstrument,
-        )));
+        ));
         run("P2C+PeakEWMA w/ weights", pe)
     });
 
-    let fut = fut.then(move |_| {
-        let d = gen_disco();
-        let ll = lb::Balance::p2c(lb::WithWeighted::from(lb::load::WithPendingRequests::new(
-            d,
-            lb::load::NoInstrument,
-        )));
-        run("P2C+LeastLoaded w/ weights", ll)
-    });
+    let mut rt = runtime::Runtime::new().unwrap();
 
     // Then run through standard comparisons...
 
+    static MAX_ENDPOINT_LATENCIES: [Duration; 10] = [
+        Duration::from_millis(10),
+        Duration::from_millis(50),
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+        Duration::from_millis(1000),
+        Duration::from_millis(1000),
+        Duration::from_millis(1000),
+        Duration::from_millis(5000),
+        Duration::from_millis(10000),
+    ];
+
     let fut = fut.then(move |_| {
+        print!("MAX_ENDPOINT_LATENCIES=[");
+        for max in &MAX_ENDPOINT_LATENCIES {
+            let l = max.as_secs() * 1_000 + u64::from(max.subsec_nanos() / 1_000 / 1_000);
+            print!("{}ms, ", l);
+        }
+        println!("]");
+
         let decay = Duration::from_secs(10);
-        let d = gen_disco();
-        let pe = lb::Balance::p2c(lb::load::WithPeakEwma::new(
+        let d = gen_disco(
+            MAX_ENDPOINT_LATENCIES
+                .iter()
+                .map(|l| (*l, lb::Weight::UNIT)),
+        );
+        let pe = lb::P2CBalance::new(lb::load::WithPeakEwma::new(
             d,
             DEFAULT_RTT,
             decay,
@@ -96,17 +106,16 @@ fn main() {
     });
 
     let fut = fut.then(move |_| {
-        let d = gen_disco();
-        let ll = lb::Balance::p2c(lb::load::WithPendingRequests::new(
+        let d = gen_disco(
+            MAX_ENDPOINT_LATENCIES
+                .iter()
+                .map(|l| (*l, lb::Weight::UNIT)),
+        );
+        let ll = lb::P2CBalance::new(lb::load::WithPendingRequests::new(
             d,
             lb::load::NoInstrument,
         ));
         run("P2C+LeastLoaded", ll)
-    });
-
-    let fut = fut.and_then(move |_| {
-        let rr = lb::Balance::round_robin(gen_disco());
-        run("RoundRobin", rr)
     });
 
     rt.spawn(fut);
@@ -115,26 +124,7 @@ fn main() {
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-#[derive(Clone, Debug, PartialEq)]
-struct Key {
-    instance: usize,
-    weight: lb::Weight,
-}
-
-impl cmp::Eq for Key {}
-
-impl hash::Hash for Key {
-    fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        self.instance.hash(state);
-        // Ignore weight.
-    }
-}
-
-impl lb::HasWeight for Key {
-    fn weight(&self) -> lb::Weight {
-        self.weight
-    }
-}
+type Key = lb::Weighted<usize>;
 
 struct Disco<S>(Vec<(Key, S)>);
 
@@ -146,6 +136,7 @@ where
     type Service = S;
     type Error = Error;
     fn poll(&mut self) -> Poll<Change<Self::Key, Self::Service>, Self::Error> {
+        trace!("polling discovery");
         match self.0.pop() {
             Some((k, service)) => Ok(Change::Insert(k, service).into()),
             None => Ok(Async::NotReady),
@@ -153,7 +144,9 @@ where
     }
 }
 
-fn gen_disco() -> impl Discover<
+fn gen_disco<I: Iterator<Item = (Duration, lb::Weight)>>(
+    iter: I,
+) -> impl Discover<
     Key = Key,
     Error = Error,
     Service = ConcurrencyLimit<
@@ -161,15 +154,9 @@ fn gen_disco() -> impl Discover<
     >,
 > + Send {
     Disco(
-        MAX_ENDPOINT_LATENCIES
-            .iter()
-            .zip(WEIGHTS.iter())
-            .enumerate()
+        iter.enumerate()
             .map(|(instance, (latency, weight))| {
-                let key = Key {
-                    instance,
-                    weight: (*weight).into(),
-                };
+                let key = lb::Weighted::new(instance, weight);
 
                 let svc = tower::service_fn(move |_| {
                     let start = Instant::now();
@@ -192,19 +179,23 @@ fn gen_disco() -> impl Discover<
     )
 }
 
-fn run<D, C>(name: &'static str, lb: lb::Balance<D, C>) -> impl Future<Item = (), Error = ()>
+fn run<D>(
+    name: &'static str,
+    lb: lb::P2CBalance<D, usize, D::Service>,
+) -> impl Future<Item = (), Error = ()>
 where
-    D: Discover + Send + 'static,
+    D: Discover<Key = Key> + Send + 'static,
     D::Error: Into<Error>,
-    D::Key: Send,
-    D::Service: Service<Req, Response = Rsp, Error = Error> + Send,
+    D::Service: Service<Req, Response = Rsp, Error = Error> + lb::Load + Send,
     <D::Service as Service<Req>>::Future: Send,
-    C: lb::Choose<D::Key, D::Service> + Send + 'static,
+    <D::Service as lb::Load>::Metric: Send,
 {
     println!("{}", name);
 
     let requests = stream::repeat::<_, Error>(Req).take(REQUESTS as u64);
-    let service = ConcurrencyLimit::new(lb, CONCURRENCY);
+    let service = lb; //ConcurrencyLimit::new(lb, CONCURRENCY);
+    fn check<S: Service<Req>>(_: &S) {}
+    check(&service);
     let responses = service.call_all(requests).unordered();
 
     compute_histo(responses).map(|s| s.report()).map_err(|_| {})
@@ -223,8 +214,8 @@ where
 impl Summary {
     fn new() -> Self {
         Self {
-            // The max delay is 2000ms. At 3 significant figures.
-            latencies: Histogram::<u64>::new_with_max(3_000, 3).unwrap(),
+            // The max delay is 10000ms. At 3 significant figures.
+            latencies: Histogram::<u64>::new_with_max(10_000, 3).unwrap(),
             start: Instant::now(),
             count_by_instance: [0; 10],
         }

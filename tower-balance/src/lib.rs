@@ -6,8 +6,8 @@ extern crate quickcheck;
 
 use futures::{Async, Poll};
 use indexmap::IndexMap;
-use log::debug;
-use rand::{rngs::SmallRng, FromEntropy, Rng, SeedableRng};
+use log::{debug, trace};
+use rand::{distributions::WeightedIndex, rngs::SmallRng, FromEntropy, Rng, SeedableRng};
 use std::{cmp, fmt, hash};
 use tower_discover::{Change, Discover};
 use tower_service::Service;
@@ -22,7 +22,7 @@ mod test;
 
 pub use self::{
     load::Load,
-    weight::{HasWeight, Weight, Weighted, WithWeighted},
+    weight::{Weight, Weighted},
 };
 
 use self::{error::Error, future::ResponseFuture};
@@ -45,7 +45,7 @@ where
     dispatched_ready: Option<Coordinate>,
 
     endpoints_by_weight: IndexMap<Weight, IndexMap<K, S>>,
-    total_weight: usize,
+    weighted_index: Option<WeightedIndex<usize>>,
 
     rng: SmallRng,
 }
@@ -65,8 +65,6 @@ where
     K: hash::Hash + cmp::Eq,
     D: Discover<Key = Weighted<K>>,
     D::Error: Into<Error>,
-    D::Service: Load,
-    <D::Service as Load>::Metric: PartialOrd + fmt::Debug,
 {
     /// Chooses services using the [Power of Two Choices][p2c].
     ///
@@ -90,7 +88,7 @@ where
             chosen_ready: None,
             dispatched_ready: None,
             endpoints_by_weight: IndexMap::default(),
-            total_weight: 0,
+            weighted_index: None,
         }
     }
 
@@ -105,7 +103,7 @@ where
             chosen_ready: None,
             dispatched_ready: None,
             endpoints_by_weight: IndexMap::default(),
-            total_weight: 0,
+            weighted_index: None,
         })
     }
 
@@ -121,15 +119,13 @@ where
         None
     }
 
-    fn locate_mut(&mut self, coord: &Coordinate) -> Option<&mut D::Service> {
+    fn locate_mut(&mut self, Coordinate { widx, eidx }: Coordinate) -> Option<&mut D::Service> {
         self.endpoints_by_weight
-            .get_index_mut(coord.widx)
-            .and_then(move |(_, eps)| eps.get_index_mut(coord.eidx).map(|(_, svc)| svc))
+            .get_index_mut(widx)
+            .and_then(move |(_, eps)| eps.get_index_mut(eidx).map(|(_, svc)| svc))
     }
 
-    fn remove_endpoint(&mut self, key: &K) -> Option<D::Service> {
-        let Coordinate { widx, eidx } = self.find(key)?;
-
+    fn remove_endpoint(&mut self, Coordinate { widx, eidx }: Coordinate) -> Option<D::Service> {
         let (ep, empty) = {
             let (_, ref mut eps) = self.endpoints_by_weight.get_index_mut(widx)?;
             let (_, ep) = eps.swap_remove_index(eidx)?;
@@ -150,11 +146,18 @@ where
 
         loop {
             match self.discover.poll().map_err(|e| error::Balance(e.into()))? {
-                Async::NotReady => return Ok(()),
+                Async::NotReady => {
+                    let weights = self.endpoints_by_weight.keys().map(|Weight(w)| w);
+                    self.weighted_index = WeightedIndex::new(weights).ok();
+                    return Ok(());
+                }
 
                 Async::Ready(Change::Insert(weighted, svc)) => {
                     let (key, weight) = weighted.into_parts();
-                    drop(self.remove_endpoint(&key));
+
+                    if let Some(coord) = self.find(&key) {
+                        drop(self.remove_endpoint(coord));
+                    }
 
                     self.endpoints_by_weight
                         .entry(weight)
@@ -164,10 +167,35 @@ where
 
                 Async::Ready(Change::Remove(weighted)) => {
                     let (key, _) = weighted.into_parts();
-                    drop(self.remove_endpoint(&key));
+
+                    if let Some(coord) = self.find(&key) {
+                        drop(self.remove_endpoint(coord));
+                    }
                 }
             }
         }
+    }
+
+    fn select_endpoint<Svc, Req>(&mut self, widx: usize) -> Result<(Coordinate, Option<<D::Service as Load>::Metric>), Error>
+    where
+        D: Discover<Service = Svc>,
+        Svc: Service<Req> + Load,
+        Svc::Error: Into<Error>,
+    {
+        let (_, ref mut eps) = self
+            .endpoints_by_weight
+            .get_index_mut(widx)
+            .expect("index must be valid");
+
+        let eidx = self.rng.gen::<usize>() % eps.len();
+        let (_, svc) = eps.get_index_mut(eidx).expect("index must be valid");
+        let load = if svc.poll_ready().map_err(Into::into)?.is_ready() {
+            Some(svc.load())
+        } else {
+            None
+        };
+
+        Ok((Coordinate { widx, eidx }, load))
     }
 }
 
@@ -189,17 +217,44 @@ where
     /// When `Async::Ready` is returned, `chosen_ready` is set with a valid index
     /// into `ready` referring to a `Service` that is ready to disptach a request.
     fn poll_ready(&mut self) -> Poll<(), Self::Error> {
+        use rand::distributions::Distribution;
+
         // Clear before `ready` is altered.
         self.chosen_ready = None;
 
         self.update_from_discover()?;
 
-        let total_weight: usize = self.total_weight.into();
-        for _ in 0..3 {
-            let iw = self.rng.gen::<usize>() % total_weight;
-            let jw = self.rng.gen::<usize>() % total_weight;
+        let widx = match self.weighted_index.as_ref() {
+            Some(d) => d.sample(&mut self.rng),
+            None => {
+                // There are no weights to consider. We've already polled the
+                // discover, so it's safe to return not ready until new
+                // endpoints are available.
+                debug!("No weighted index");
+                debug_assert!(self.endpoints_by_weight.is_empty());
+                return Ok(Async::NotReady);
+            }
+        };
 
+        let (a, aload) = self.select_endpoint(widx)?;
+        let (b, bload) = self.select_endpoint(widx)?;
+        trace!("a={:?} load={:?}; b={:?} load={:?}", a, aload, b, bload);
+        self.chosen_ready = match (aload, bload) {
+            (Some(aload), Some(bload)) => {
+                if aload <= bload {
+                    Some(a)
+                } else {
+                    Some(b)
+                }
+            }
+            (Some(_), None) => Some(a),
+            (None, Some(_)) => Some(b),
+            (None, None) => None,
+        };
 
+        trace!("chosen: {:?}", self.chosen_ready);
+        if self.chosen_ready.is_some() {
+            return Ok(Async::Ready(()));
         }
 
         Ok(Async::NotReady)
@@ -208,7 +263,7 @@ where
     fn call(&mut self, request: Request) -> Self::Future {
         let coord = self.chosen_ready.take().expect("not ready");
         let rsp = {
-            let ref mut svc = self.locate_mut(&coord).expect("invalid chosen ready index");
+            let ref mut svc = self.locate_mut(coord).expect("invalid chosen ready index");
             svc.call(request)
         };
         self.dispatched_ready = Some(coord);

@@ -1,17 +1,11 @@
 use futures::{try_ready, Async, Poll};
-use log::trace;
-use std::marker::PhantomData;
-use std::{fmt, hash::Hash, ops};
 use tower_discover::{Change, Discover};
-use tower_service::Service;
-
-use crate::Load;
 
 /// A weight on [0.0, ∞].
 ///
 /// Lesser-weighted nodes receive less traffic than heavier-weighted nodes.
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq, Ord, Hash)]
-pub struct Weight(usize);
+pub struct Weight(pub usize);
 
 /// A Service, that implements Load, that
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq, Ord, Hash)]
@@ -20,35 +14,16 @@ pub struct Weighted<T> {
     weight: Weight,
 }
 
-#[derive(Debug)]
-pub struct WithWeighted<T, K> {
-    inner: T,
-    _marker: PhantomData<K>,
-}
-
-pub trait HasWeight {
-    fn weight(&self) -> Weight;
-}
-
 // === impl Weighted ===
-
-impl<T: HasWeight> From<T> for Weighted<T> {
-    fn from(inner: T) -> Self {
-        let weight = inner.weight();
-        Self { inner, weight }
-    }
-}
-
-impl<T> HasWeight for Weighted<T> {
-    fn weight(&self) -> Weight {
-        self.weight
-    }
-}
 
 impl<T> Weighted<T> {
     pub fn new<W: Into<Weight>>(inner: T, w: W) -> Self {
         let weight = w.into();
         Self { inner, weight }
+    }
+
+    pub fn weight(&self) -> Weight {
+        self.weight
     }
 
     pub fn into_parts(self) -> (T, Weight) {
@@ -57,67 +32,27 @@ impl<T> Weighted<T> {
     }
 }
 
-impl<L> Load for Weighted<L>
-where
-    L: Load,
-    L::Metric: ops::Div<Weight> + fmt::Debug + Copy,
-    <L::Metric as ops::Div<Weight>>::Output: PartialOrd + fmt::Debug,
-{
-    type Metric = <L::Metric as ops::Div<Weight>>::Output;
-
-    fn load(&self) -> Self::Metric {
-        let load = self.inner.load();
-        let v = load / self.weight;
-        trace!("load={:?}; weight={:?} => {:?}", load, self.weight, v);
-        v
+impl<T> std::convert::AsRef<T> for Weighted<T> {
+    fn as_ref(&self) -> &T {
+        &self.inner
     }
 }
 
-impl<R, S: Service<R>> Service<R> for Weighted<S> {
-    type Response = S::Response;
-    type Error = S::Error;
-    type Future = S::Future;
-
-    fn poll_ready(&mut self) -> Poll<(), Self::Error> {
-        self.inner.poll_ready()
-    }
-
-    fn call(&mut self, req: R) -> Self::Future {
-        self.inner.call(req)
+impl<T> std::convert::AsMut<T> for Weighted<T> {
+    fn as_mut(&mut self) -> &mut T {
+        &mut self.inner
     }
 }
 
-// === impl WithWeighted ===
-
-impl<D, K> From<D> for WithWeighted<D, K>
-where
-    D: Discover<Key = Weighted<K>>,
-    K: Hash + Eq,
-{
-    fn from(inner: D) -> Self {
-        WithWeighted {
-            inner,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<D, K> Discover for WithWeighted<D, K>
-where
-    D: Discover<Key = Weighted<K>>,
-    K: Hash + Eq,
-{
-    type Key = K;
+impl<D: Discover> Discover for Weighted<D> {
+    type Key = Weighted<D::Key>;
     type Error = D::Error;
-    type Service = Weighted<D::Service>;
+    type Service = D::Service;
 
-    fn poll(&mut self) -> Poll<Change<K, Self::Service>, Self::Error> {
+    fn poll(&mut self) -> Poll<Change<Self::Key, Self::Service>, Self::Error> {
         let c = match try_ready!(self.inner.poll()) {
-            Change::Remove(k) => Change::Remove(k.inner),
-            Change::Insert(k, svc) => {
-                let (inner, weight) = k.into_parts();
-                Change::Insert(inner, Weighted::new(svc, weight))
-            }
+            Change::Remove(k) => Change::Remove(Weighted::new(k, self.weight)),
+            Change::Insert(k, svc) => Change::Insert(Weighted::new(k, self.weight), svc),
         };
 
         Ok(Async::Ready(c))
@@ -136,20 +71,6 @@ impl Weight {
 impl Default for Weight {
     fn default() -> Self {
         Weight::UNIT
-    }
-}
-
-impl Into<usize> for Weight {
-    fn into(self) -> usize {
-        self.0
-    }
-}
-
-impl ops::Add<Weight> for Weight {
-    type Output = Weight;
-
-    fn add(self, w: Weight) -> Weight {
-        Weight(self.0.saturating_add(w.0))
     }
 }
 

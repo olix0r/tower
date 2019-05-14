@@ -1,4 +1,5 @@
 use futures::{try_ready, Async, Poll};
+use std::fmt;
 use tower_discover::{Change, Discover};
 use tower_service::Service;
 
@@ -18,7 +19,7 @@ impl<T, M: Copy> Constant<T, M> {
     }
 }
 
-impl<T, M: Copy + PartialOrd> Load for Constant<T, M> {
+impl<T, M: Copy + PartialOrd + fmt::Debug> Load for Constant<T, M> {
     type Metric = M;
 
     fn load(&self) -> M {

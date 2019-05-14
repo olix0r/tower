@@ -4,7 +4,7 @@ use tower_discover::{Change, Discover};
 use tower_service::Service;
 
 use super::{Instrument, InstrumentFuture, NoInstrument};
-use crate::{HasWeight, Load, Weight};
+use crate::Load;
 
 /// Expresses load based on the number of currently-pending requests.
 #[derive(Debug)]
@@ -55,12 +55,6 @@ impl<S, I> Load for PendingRequests<S, I> {
     fn load(&self) -> Count {
         // Count the number of references that aren't `self`.
         Count(self.ref_count.ref_count() - 1)
-    }
-}
-
-impl<S: HasWeight, I> HasWeight for PendingRequests<S, I> {
-    fn weight(&self) -> Weight {
-        self.service.weight()
     }
 }
 

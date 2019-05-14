@@ -10,7 +10,7 @@ use tower_service::Service;
 
 use super::{Instrument, InstrumentFuture, NoInstrument};
 
-use crate::{HasWeight, Load, Weight};
+use crate::Load;
 
 /// Wraps an `S`-typed Service with Peak-EWMA load measurement.
 ///
@@ -189,12 +189,6 @@ impl<S, I> Load for PeakEwma<S, I> {
             cost,
         );
         cost
-    }
-}
-
-impl<S: HasWeight, I> HasWeight for PeakEwma<S, I> {
-    fn weight(&self) -> Weight {
-        self.service.weight()
     }
 }
 
