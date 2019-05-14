@@ -73,23 +73,3 @@ impl Default for Weight {
         Weight::UNIT
     }
 }
-
-#[test]
-fn into() {
-    assert_eq!(Weight::from(std::f64::INFINITY), Weight::MAX);
-    assert_eq!(Weight::from(std::f64::NAN), Weight::ZERO);
-    assert_eq!(Weight::from(0.0), Weight::ZERO);
-    assert_eq!(Weight::from(1.0), Weight::UNIT);
-    assert_eq!(Weight::from(0.1), Weight(1_000));
-    assert_eq!(Weight::from(0.01), Weight(100));
-    assert_eq!(Weight::from(0.001), Weight(10));
-    assert_eq!(Weight::from(0.0001), Weight::MIN);
-    assert_eq!(Weight::from(0.00001), Weight::MIN);
-}
-
-#[test]
-fn div_min() {
-    assert_eq!(10.0 / Weight::ZERO, ::std::f64::INFINITY);
-    assert_eq!(10 / Weight::ZERO, ::std::f64::INFINITY);
-    assert_eq!(0 / Weight::ZERO, ::std::f64::INFINITY);
-}
