@@ -22,6 +22,8 @@ pub use self::{
 
 use self::{error::Error, future::ResponseFuture};
 
+const MAX_TRIES: usize = 3;
+
 /// Balances requests across a set of inner services.
 #[derive(Debug)]
 pub struct P2CBalance<D: Discover<Key = Weighted<K>>, K>
@@ -31,12 +33,12 @@ where
     /// Provides endpoints from service discovery.
     discover: D,
 
+    endpoints_by_weight: IndexMap<Weight, IndexMap<K, D::Service>>,
+    weighted_index: Option<WeightedIndex<usize>>,
+
     /// Holds an index into `ready`, indicating the service that has been chosen to
     /// dispatch the next request.
     chosen: Option<Coordinate>,
-
-    endpoints_by_weight: IndexMap<Weight, IndexMap<K, D::Service>>,
-    weighted_index: Option<WeightedIndex<usize>>,
 
     rng: SmallRng,
 }
@@ -143,31 +145,28 @@ where
                     return Ok(());
                 }
 
-                Async::Ready(Change::Insert(weighted, svc)) => {
-                    let (key, weight) = weighted.into_parts();
-
+                Async::Ready(Change::Remove(weighted)) => {
+                    let (key, _) = weighted.into_parts();
                     if let Some(coord) = self.find(&key) {
                         drop(self.remove_endpoint(coord));
                     }
+                }
 
+                Async::Ready(Change::Insert(weighted, svc)) => {
+                    let (key, weight) = weighted.into_parts();
+                    if let Some(coord) = self.find(&key) {
+                        drop(self.remove_endpoint(coord));
+                    }
                     self.endpoints_by_weight
                         .entry(weight)
                         .or_insert_with(|| IndexMap::default())
                         .insert(key, svc);
                 }
-
-                Async::Ready(Change::Remove(weighted)) => {
-                    let (key, _) = weighted.into_parts();
-
-                    if let Some(coord) = self.find(&key) {
-                        drop(self.remove_endpoint(coord));
-                    }
-                }
-            }
+           }
         }
     }
 
-    fn select_endpoint<Svc, Req>(
+    fn random_endpoint<Svc, Req>(
         &mut self,
         widx: usize,
     ) -> Result<(Coordinate, Option<<D::Service as Load>::Metric>), Error>
@@ -221,36 +220,39 @@ where
         let widx = match self.weighted_index.as_ref() {
             Some(d) => d.sample(&mut self.rng),
             None => {
+                debug_assert!(self.endpoints_by_weight.is_empty());
                 // There are no weights to consider. We've already polled the
                 // discover, so it's safe to return not ready until new
                 // endpoints are available.
-                debug!("No weighted index");
-                debug_assert!(self.endpoints_by_weight.is_empty());
+                trace!("no endpoints");
                 return Ok(Async::NotReady);
             }
         };
 
-        let (a, aload) = self.select_endpoint(widx)?;
-        let (b, bload) = self.select_endpoint(widx)?;
-        trace!("a={:?} load={:?}; b={:?} load={:?}", a, aload, b, bload);
-        self.chosen = match (aload, bload) {
-            (Some(aload), Some(bload)) => {
-                if aload <= bload {
-                    Some(a)
-                } else {
-                    Some(b)
+        for _ in 0..MAX_TRIES {
+            let (a, aload) = self.random_endpoint(widx)?;
+            let (b, bload) = self.random_endpoint(widx)?;
+            trace!("a={:?} load={:?}; b={:?} load={:?}", a, aload, b, bload);
+            self.chosen = match (aload, bload) {
+                (Some(aload), Some(bload)) => {
+                    if aload <= bload {
+                        Some(a)
+                    } else {
+                        Some(b)
+                    }
                 }
-            }
-            (Some(_), None) => Some(a),
-            (None, Some(_)) => Some(b),
-            (None, None) => None,
-        };
+                (Some(_), None) => Some(a),
+                (None, Some(_)) => Some(b),
+                (None, None) => None,
+            };
 
-        trace!("chosen: {:?}", self.chosen);
-        if self.chosen.is_some() {
-            return Ok(Async::Ready(()));
+            trace!("chosen: {:?}", self.chosen);
+            if self.chosen.is_some() {
+                return Ok(Async::Ready(()));
+            }
         }
 
+        trace!("exhausted attempts");
         Ok(Async::NotReady)
     }
 
