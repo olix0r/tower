@@ -1,4 +1,7 @@
-use crate::{error, future::ResponseFuture, load::Load};
+pub mod future;
+
+use self::future::ResponseFuture;
+use crate::{error, load::Load};
 use futures::{try_ready, Async, Poll};
 use indexmap::IndexMap;
 use log::{debug, trace};
@@ -24,6 +27,7 @@ use tower_service::Service;
 /// [p2c]: http://www.eecs.harvard.edu/~michaelm/postscripts/handbook2001.pdf
 #[derive(Debug)]
 pub struct P2CBalance<D: Discover> {
+    // XXX Pool requires direct access to this... Not ideal.
     pub(crate) discover: D,
 
     endpoints: IndexMap<D::Key, D::Service>,

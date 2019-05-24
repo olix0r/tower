@@ -52,7 +52,7 @@ fn main() {
     let mut rt = runtime::Runtime::new().unwrap();
 
     let fut = future::lazy(move || {
-       let decay = Duration::from_secs(10);
+        let decay = Duration::from_secs(10);
         let d = gen_disco();
         let pe = lb::P2CBalance::new(lb::load::WithPeakEwma::new(
             d,
