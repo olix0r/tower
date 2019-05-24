@@ -3,14 +3,28 @@ use futures::{try_ready, Async, Poll};
 use indexmap::IndexMap;
 use log::{debug, trace};
 use rand::{rngs::SmallRng, FromEntropy, Rng, SeedableRng};
-use std::{cmp, fmt};
+use std::cmp;
 use tower_discover::{Change, Discover};
 use tower_service::Service;
 
-/// Balances requests across a set of inner services.
+/// Chooses services using the [Power of Two Choices][p2c].
+///
+/// This configuration is prefered when a load metric is known.
+///
+/// As described in the [Finagle Guide][finagle]:
+///
+/// > The algorithm randomly picks two services from the set of ready endpoints and
+/// > selects the least loaded of the two. By repeatedly using this strategy, we can
+/// > expect a manageable upper bound on the maximum load of any server.
+/// >
+/// > The maximum load variance between any two servers is bound by `ln(ln(n))` where
+/// > `n` is the number of servers in the cluster.
+///
+/// [finagle]: https://twitter.github.io/finagle/guide/Clients.html#power-of-two-choices-p2c-least-loaded
+/// [p2c]: http://www.eecs.harvard.edu/~michaelm/postscripts/handbook2001.pdf
 #[derive(Debug)]
 pub struct P2CBalance<D: Discover> {
-    discover: D,
+    pub(crate) discover: D,
 
     endpoints: IndexMap<D::Key, D::Service>,
 
@@ -24,21 +38,6 @@ pub struct P2CBalance<D: Discover> {
 // ===== impl P2CBalance =====
 
 impl<D: Discover> P2CBalance<D> {
-    /// Chooses services using the [Power of Two Choices][p2c].
-    ///
-    /// This configuration is prefered when a load metric is known.
-    ///
-    /// As described in the [Finagle Guide][finagle]:
-    ///
-    /// > The algorithm randomly picks two services from the set of ready endpoints and
-    /// > selects the least loaded of the two. By repeatedly using this strategy, we can
-    /// > expect a manageable upper bound on the maximum load of any server.
-    /// >
-    /// > The maximum load variance between any two servers is bound by `ln(ln(n))` where
-    /// > `n` is the number of servers in the cluster.
-    ///
-    /// [finagle]: https://twitter.github.io/finagle/guide/Clients.html#power-of-two-choices-p2c-least-loaded
-    /// [p2c]: http://www.eecs.harvard.edu/~michaelm/postscripts/handbook2001.pdf
     pub fn new(discover: D) -> Self {
         Self {
             rng: SmallRng::from_entropy(),
@@ -93,7 +92,6 @@ impl<D: Discover> P2CBalance<D> {
         D: Discover<Service = Svc>,
         Svc: Service<Request> + Load,
         Svc::Error: Into<error::Error>,
-        Svc::Metric: fmt::Debug,
     {
         match self.endpoints.len() {
             0 => Ok(Async::NotReady),
@@ -150,7 +148,6 @@ where
     D::Error: Into<error::Error>,
     Svc: Service<Request> + Load,
     Svc::Error: Into<error::Error>,
-    Svc::Metric: PartialOrd + fmt::Debug,
 {
     type Response = <D::Service as Service<Request>>::Response;
     type Error = error::Error;

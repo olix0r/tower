@@ -6,13 +6,6 @@ pub mod error;
 pub mod future;
 pub mod load;
 mod p2c;
-//pub mod pool;
+pub mod pool;
 
-#[cfg(test)]
-mod test;
-
-pub use self::{
-    load::Load,
-    p2c::P2CBalance,
-    //pool::Pool,
-};
+pub use self::{load::Load, p2c::P2CBalance, pool::Pool};
