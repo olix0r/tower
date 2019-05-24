@@ -4,7 +4,7 @@ use self::future::ResponseFuture;
 use crate::{error, load::Load};
 use futures::{try_ready, Async, Poll};
 use indexmap::IndexMap;
-use log::{debug, trace};
+use log::{debug, trace, warn};
 use rand::{rngs::SmallRng, FromEntropy, Rng, SeedableRng};
 use std::cmp;
 use tower_discover::{Change, Discover};
@@ -100,11 +100,14 @@ impl<D: Discover> P2CBalance<D> {
         match self.endpoints.len() {
             0 => Ok(Async::NotReady),
             1 => {
+                // If there's only one endpoint, ignore its but require that it
+                // is ready.
                 try_ready!(self.poll_endpoint_index_load(0));
                 self.ready_index = Some(0);
                 Ok(Async::Ready(0))
             }
             len => {
+                // Get two distinct random indexes (in a random order). Poll each
                 let idxs = rand::seq::index::sample(&mut self.rng, len, 2);
 
                 let aidx = idxs.index(0);
@@ -131,6 +134,9 @@ impl<D: Discover> P2CBalance<D> {
         }
     }
 
+    /// This never actually fails, because failures are logged and the enpdoint
+    /// is dropped and NotReady is returned. This is safe in the context in which
+    /// it is called.
     fn poll_endpoint_index_load<Svc, Request>(
         &mut self,
         index: usize,
@@ -140,9 +146,16 @@ impl<D: Discover> P2CBalance<D> {
         Svc: Service<Request> + Load,
         Svc::Error: Into<error::Error>,
     {
-        let (_, svc) = self.endpoints.get_index_mut(index).unwrap();
-        try_ready!(svc.poll_ready());
-        Ok(Async::Ready(svc.load()))
+        let (_, svc) = self.endpoints.get_index_mut(index).expect("invalid index");
+        match svc.poll_ready() {
+            Ok(Async::NotReady) => Ok(Async::NotReady),
+            Ok(Async::Ready(())) => Ok(Async::Ready(svc.load())),
+            Err(e) => {
+                drop(self.endpoints.swap_remove_index(index));
+                warn!("load balancer endpoint failed: {}", e.into());
+                Ok(Async::NotReady)
+            }
+        }
     }
 }
 
