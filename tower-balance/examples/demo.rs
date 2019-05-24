@@ -63,7 +63,7 @@ fn main() {
     let fut = future::lazy(move || {
         let decay = Duration::from_secs(10);
         let d = gen_disco();
-        let pe = lb::Balance::p2c(lb::WithWeighted::from(lb::load::WithPeakEwma::new(
+        let pe = lb::P2CBalance::new(lb::WithWeighted::from(lb::load::WithPeakEwma::new(
             d,
             DEFAULT_RTT,
             decay,
@@ -74,7 +74,7 @@ fn main() {
 
     let fut = fut.then(move |_| {
         let d = gen_disco();
-        let ll = lb::Balance::p2c(lb::WithWeighted::from(lb::load::WithPendingRequests::new(
+        let ll = lb::P2CBalance::new(lb::WithWeighted::from(lb::load::WithPendingRequests::new(
             d,
             lb::load::NoInstrument,
         )));
@@ -86,7 +86,7 @@ fn main() {
     let fut = fut.then(move |_| {
         let decay = Duration::from_secs(10);
         let d = gen_disco();
-        let pe = lb::Balance::p2c(lb::load::WithPeakEwma::new(
+        let pe = lb::P2CBalance::new(lb::load::WithPeakEwma::new(
             d,
             DEFAULT_RTT,
             decay,
@@ -97,16 +97,11 @@ fn main() {
 
     let fut = fut.then(move |_| {
         let d = gen_disco();
-        let ll = lb::Balance::p2c(lb::load::WithPendingRequests::new(
+        let ll = lb::P2CBalance::new(lb::load::WithPendingRequests::new(
             d,
             lb::load::NoInstrument,
         ));
         run("P2C+LeastLoaded", ll)
-    });
-
-    let fut = fut.and_then(move |_| {
-        let rr = lb::Balance::round_robin(gen_disco());
-        run("RoundRobin", rr)
     });
 
     rt.spawn(fut);
@@ -192,18 +187,20 @@ fn gen_disco() -> impl Discover<
     )
 }
 
-fn run<D, C>(name: &'static str, lb: lb::Balance<D, C>) -> impl Future<Item = (), Error = ()>
+fn run<D>(name: &'static str, lb: lb::P2CBalance<D>) -> impl Future<Item = (), Error = ()>
 where
     D: Discover + Send + 'static,
     D::Error: Into<Error>,
     D::Key: Send,
-    D::Service: Service<Req, Response = Rsp, Error = Error> + Send,
+    D::Service: Service<Req, Response = Rsp, Error = Error> + lb::Load + Send,
     <D::Service as Service<Req>>::Future: Send,
-    C: lb::Choose<D::Key, D::Service> + Send + 'static,
+    <D::Service as lb::Load>::Metric: std::fmt::Debug,
 {
     println!("{}", name);
 
     let requests = stream::repeat::<_, Error>(Req).take(REQUESTS as u64);
+    fn check<S: Service<Req>>(_: &S) {}
+    check(&lb);
     let service = ConcurrencyLimit::new(lb, CONCURRENCY);
     let responses = service.call_all(requests).unordered();
 

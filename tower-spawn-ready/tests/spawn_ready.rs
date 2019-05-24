@@ -3,7 +3,7 @@ use std::{thread, time::Duration};
 use tokio_executor::{SpawnError, TypedExecutor};
 use tower::Service;
 use tower_spawn_ready::{error, SpawnReady};
-use tower_test::{mock};
+use tower_test::mock;
 
 #[test]
 fn when_inner_is_not_ready() {
