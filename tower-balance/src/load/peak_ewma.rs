@@ -1,7 +1,7 @@
+use crate::Load;
 use futures::{try_ready, Async, Poll};
 use log::trace;
 use std::{
-    ops,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -10,8 +10,6 @@ use tower_discover::{Change, Discover};
 use tower_service::Service;
 
 use super::{Instrument, InstrumentFuture, NoInstrument};
-
-use crate::{HasWeight, Load, Weight};
 
 /// Wraps an `S`-typed Service with Peak-EWMA load measurement.
 ///
@@ -193,12 +191,6 @@ impl<S, I> Load for PeakEwma<S, I> {
     }
 }
 
-impl<S: HasWeight, I> HasWeight for PeakEwma<S, I> {
-    fn weight(&self) -> Weight {
-        self.service.weight()
-    }
-}
-
 impl<S, I> PeakEwma<S, I> {
     fn update_estimate(&self) -> f64 {
         let mut rtt = self.rtt_estimate.lock().expect("peak ewma prior_estimate");
@@ -288,14 +280,6 @@ impl Drop for Handle {
 }
 
 // ===== impl Cost =====
-
-impl ops::Div<Weight> for Cost {
-    type Output = f64;
-
-    fn div(self, w: Weight) -> f64 {
-        self.0 / w
-    }
-}
 
 // Utility that converts durations to nanos in f64.
 //

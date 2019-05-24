@@ -12,10 +12,7 @@ mod p2c;
 mod test;
 
 pub use self::{
-    load::{
-        weight::{HasWeight, Weight, Weighted, WithWeighted},
-        Load,
-    },
+    load::Load,
     p2c::P2CBalance,
     //pool::Pool,
 };
