@@ -92,6 +92,7 @@ fn two_endpoints_with_equal_weight() {
         );
 
         handle_a.allow(1);
+        handle_b.allow(0);
         assert_ready!(svc, "must be ready when one of two services is ready");
         {
             let fut = svc.call(());
@@ -100,19 +101,28 @@ fn two_endpoints_with_equal_weight() {
             assert_eq!(fut.wait().expect("call must complete"), "a");
         }
 
+        handle_a.allow(0);
+        handle_b.allow(1);
+        assert_ready!(svc, "must be ready when both endpoints are ready");
+        {
+            let fut = svc.call(());
+            let ((), rsp) = handle_b.next_request().unwrap();
+            rsp.send_response("b");
+            assert_eq!(fut.wait().expect("call must complete"), "b");
+        }
+
         handle_a.allow(1);
         handle_b.allow(1);
         assert_ready!(svc, "must be ready when both endpoints are ready");
-
-        let fut = svc.call(());
-
-        for (ref mut h, c) in &mut [(&mut handle_a, "a"), (&mut handle_b, "b")] {
-            if let Async::Ready(Some((_, tx))) = h.poll_request().unwrap() {
-                tx.send_response(c);
+        {
+            let fut = svc.call(());
+            for (ref mut h, c) in &mut [(&mut handle_a, "a"), (&mut handle_b, "b")] {
+                if let Async::Ready(Some((_, tx))) = h.poll_request().unwrap() {
+                    tx.send_response(c);
+                }
             }
+            fut.wait().expect("call must complete");
         }
-
-        fut.wait().expect("call must complete");
 
         handle_a.send_error("endpoint lost");
         handle_b.allow(1);

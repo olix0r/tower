@@ -4,18 +4,17 @@ pub mod future;
 mod test;
 
 use self::future::ResponseFuture;
-use crate::{error, load::Load};
+use crate::error;
 use futures::{try_ready, Async, Poll};
 use indexmap::IndexMap;
 use log::{debug, info, trace};
 use rand::{rngs::SmallRng, FromEntropy, Rng, SeedableRng};
 use std::cmp;
 use tower_discover::{Change, Discover};
+use tower_load::Load;
 use tower_service::Service;
 
-/// Chooses services using the [Power of Two Choices][p2c].
-///
-/// This configuration is prefered when a load metric is known.
+/// Distributes requests across inner services using the [Power of Two Choices][p2c].
 ///
 /// As described in the [Finagle Guide][finagle]:
 ///
