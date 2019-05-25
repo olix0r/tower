@@ -1,4 +1,3 @@
-use env_logger;
 use futures::{Async, Future};
 use tower_discover::ServiceList;
 use tower_service::Service;
@@ -74,8 +73,6 @@ fn single_endpoint() {
 
 #[test]
 fn two_endpoints_with_equal_weight() {
-    env_logger::init();
-
     let (mock_a, mut handle_a) = mock::pair();
     let (mock_b, mut handle_b) = mock::pair();
     let mock_a = load::Constant::new(mock_a, 1);
