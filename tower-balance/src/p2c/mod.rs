@@ -1,10 +1,13 @@
 pub mod future;
 
+#[cfg(test)]
+mod test;
+
 use self::future::ResponseFuture;
 use crate::{error, load::Load};
 use futures::{try_ready, Async, Poll};
 use indexmap::IndexMap;
-use log::{debug, trace, warn};
+use log::{debug, info, trace};
 use rand::{rngs::SmallRng, FromEntropy, Rng, SeedableRng};
 use std::cmp;
 use tower_discover::{Change, Discover};
@@ -79,16 +82,32 @@ impl<D: Discover> P2CBalance<D> {
                 Change::Remove(rm_key) => {
                     // Update the ready index to account for reordering of endpoints.
                     let orig_sz = self.endpoints.len();
+                    println!("removing (ready={:?})", self.ready_index);
                     if let Some((rm_idx, _, _)) = self.endpoints.swap_remove_full(&rm_key) {
                         self.ready_index = match self.ready_index {
-                            Some(i) if i == rm_idx => None,              // removed
-                            Some(i) if i == orig_sz - 1 => Some(rm_idx), // swapped
-                            ready_index => ready_index,                  // uneffected
+                            Some(i) => Self::repair_index(i, rm_idx, orig_sz),
+                            None => None,
                         };
                     }
                 }
             }
         }
+    }
+
+    fn repair_index(orig_idx: usize, rm_idx: usize, orig_sz: usize) -> Option<usize> {
+        let repaired = match orig_idx {
+            i if i == rm_idx => None,              // removed
+            i if i == orig_sz - 1 => Some(rm_idx), // swapped
+            i => Some(i),                          // uneffected
+        };
+        trace!(
+            "repair_index: orig={}; rm={}; sz={}; => {:?}",
+            orig_idx,
+            rm_idx,
+            orig_sz,
+            repaired,
+        );
+        repaired
     }
 
     fn poll_ready_index<Svc, Request>(&mut self) -> Poll<usize, Svc::Error>
@@ -102,19 +121,50 @@ impl<D: Discover> P2CBalance<D> {
             1 => {
                 // If there's only one endpoint, ignore its but require that it
                 // is ready.
-                try_ready!(self.poll_endpoint_index_load(0));
-                self.ready_index = Some(0);
-                Ok(Async::Ready(0))
+                match self.poll_endpoint_index_load(0) {
+                    Ok(Async::NotReady) => Ok(Async::NotReady),
+                    Ok(Async::Ready(_)) => {
+                        self.ready_index = Some(0);
+                        Ok(Async::Ready(0))
+                    }
+                    Err(e) => {
+                        info!("evicting failed endpoint: {}", e.into());
+                        let _ = self.endpoints.swap_remove_index(0);
+                        Ok(Async::NotReady)
+                    }
+                }
             }
             len => {
                 // Get two distinct random indexes (in a random order). Poll each
                 let idxs = rand::seq::index::sample(&mut self.rng, len, 2);
 
                 let aidx = idxs.index(0);
-                let aload = self.poll_endpoint_index_load(aidx)?;
                 let bidx = idxs.index(1);
-                let bload = self.poll_endpoint_index_load(bidx)?;
-                trace!("load[{:?}]={:?}; load[{:?}]={:?}", aidx, aload, bidx, bload);
+                println!("indexes a={} b={} / {}", aidx, bidx, len);
+
+                let (aload, bidx) = match self.poll_endpoint_index_load(aidx) {
+                    Ok(ready) => (ready, bidx),
+                    Err(e) => {
+                        info!("evicting failed endpoint: {}", e.into());
+                        let _ = self.endpoints.swap_remove_index(aidx);
+                        let new_bidx = Self::repair_index(bidx, aidx, len)
+                            .expect("random indices must be distinct");
+                        (Async::NotReady, new_bidx)
+                    }
+                };
+
+                let (bload, aidx) = match self.poll_endpoint_index_load(bidx) {
+                    Ok(ready) => (ready, aidx),
+                    Err(e) => {
+                        info!("evicting failed endpoint: {}", e.into());
+                        let _ = self.endpoints.swap_remove_index(bidx);
+                        let new_aidx = Self::repair_index(aidx, bidx, len)
+                            .expect("random indices must be distinct");
+                        (Async::NotReady, new_aidx)
+                    }
+                };
+
+                trace!("load[{}]={:?}; load[{}]={:?}", aidx, aload, bidx, bload);
 
                 let ready = match (aload, bload) {
                     (Async::Ready(aload), Async::Ready(bload)) => {
@@ -134,9 +184,6 @@ impl<D: Discover> P2CBalance<D> {
         }
     }
 
-    /// This never actually fails, because failures are logged and the enpdoint
-    /// is dropped and NotReady is returned. This is safe in the context in which
-    /// it is called.
     fn poll_endpoint_index_load<Svc, Request>(
         &mut self,
         index: usize,
@@ -146,16 +193,14 @@ impl<D: Discover> P2CBalance<D> {
         Svc: Service<Request> + Load,
         Svc::Error: Into<error::Error>,
     {
+        println!(
+            "poll_endpoint_index_load: index={}, len={}",
+            index,
+            self.endpoints.len()
+        );
         let (_, svc) = self.endpoints.get_index_mut(index).expect("invalid index");
-        match svc.poll_ready() {
-            Ok(Async::NotReady) => Ok(Async::NotReady),
-            Ok(Async::Ready(())) => Ok(Async::Ready(svc.load())),
-            Err(e) => {
-                drop(self.endpoints.swap_remove_index(index));
-                warn!("load balancer endpoint failed: {}", e.into());
-                Ok(Async::NotReady)
-            }
-        }
+        try_ready!(svc.poll_ready());
+        Ok(Async::Ready(svc.load()))
     }
 }
 
@@ -179,9 +224,19 @@ where
         // previously-selected `ready_index` if appropriate.
         self.poll_discover()?;
 
-        if self.ready_index.is_some() {
+        if let Some(index) = self.ready_index {
             debug_assert!(!self.endpoints.is_empty());
-            return Ok(Async::Ready(()));
+            // Ensure the selected endpoint is still ready.
+            match self.poll_endpoint_index_load(index) {
+                Ok(Async::Ready(_)) => return Ok(Async::Ready(())),
+                Ok(Async::NotReady) => {}
+                Err(e) => {
+                    drop(self.endpoints.swap_remove_index(index));
+                    info!("evicting failed endpoint: {}", e.into());
+                }
+            }
+
+            self.ready_index = None;
         }
 
         let tries = match self.endpoints.len() {
