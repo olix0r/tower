@@ -85,7 +85,6 @@ impl<D: Discover> P2CBalance<D> {
                 Change::Remove(rm_key) => {
                     // Update the ready index to account for reordering of endpoints.
                     let orig_sz = self.endpoints.len();
-                    println!("removing (ready={:?})", self.ready_index);
                     if let Some((rm_idx, _, _)) = self.endpoints.swap_remove_full(&rm_key) {
                         self.ready_index = match self.ready_index {
                             Some(i) => Self::repair_index(i, rm_idx, orig_sz),
@@ -147,7 +146,6 @@ impl<D: Discover> P2CBalance<D> {
 
                 let aidx = idxs.index(0);
                 let bidx = idxs.index(1);
-                println!("indexes a={} b={} / {}", aidx, bidx, len);
 
                 let (aload, bidx) = match self.poll_endpoint_index_load(aidx) {
                     Ok(ready) => (ready, bidx),
@@ -200,11 +198,6 @@ impl<D: Discover> P2CBalance<D> {
         Svc: Service<Request> + Load,
         Svc::Error: Into<error::Error>,
     {
-        println!(
-            "poll_endpoint_index_load: index={}, len={}",
-            index,
-            self.endpoints.len()
-        );
         let (_, svc) = self.endpoints.get_index_mut(index).expect("invalid index");
         try_ready!(svc.poll_ready());
         Ok(Async::Ready(svc.load()))
