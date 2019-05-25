@@ -1,6 +1,7 @@
 use futures::{Async, Future};
 use tower_discover::ServiceList;
 use tower_service::Service;
+use tower_load as load;
 use tower_test::mock;
 
 use crate::*;

@@ -9,7 +9,6 @@ pub mod future;
 mod test;
 
 use self::future::ResponseFuture;
-use crate::error;
 use futures::{try_ready, Async, Poll};
 use indexmap::IndexMap;
 use log::{debug, info, trace};
@@ -139,7 +138,11 @@ impl<D: Discover> P2CBalance<D> {
                 }
             }
             len => {
-                // Get two distinct random indexes (in a random order). Poll each
+                // Get two distinct random indexes (in a random order). Poll the
+                // service at each index.
+                //
+                // If either fails, the service is removed from the set of
+                // endpoints.
                 let idxs = rand::seq::index::sample(&mut self.rng, len, 2);
 
                 let aidx = idxs.index(0);

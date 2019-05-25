@@ -7,24 +7,8 @@ use tower_util::MakeService;
 /// details.
 ///
 ///  [builder]: https://rust-lang-nursery.github.io/api-guidelines/type-safety.html#builders-enable-construction-of-complex-values-c-builder
-#[derive(Copy, Clone, Debug)]
-pub struct Builder {
-    low: f64,
-    high: f64,
-    init: f64,
-    alpha: f64,
-}
-
-impl Default for Builder {
-    fn default() -> Self {
-        Builder {
-            init: 0.1,
-            low: 0.00001,
-            high: 0.2,
-            alpha: 0.03,
-        }
-    }
-}
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Builder(super::Options);
 
 impl Builder {
     /// Create a new builder with default values for all load settings.
@@ -40,7 +24,7 @@ impl Builder {
     /// The default value is 0.01. That is, when one in every 100 `poll_ready` calls return
     /// `NotReady`, then the underlying service is considered underutilized.
     pub fn underutilized_below(&mut self, low: f64) -> &mut Self {
-        self.low = low;
+        self.0.low = low;
         self
     }
 
@@ -51,7 +35,7 @@ impl Builder {
     /// The default value is 0.5. That is, when every other call to `poll_ready` returns
     /// `NotReady`, then the underlying service is considered highly loaded.
     pub fn loaded_above(&mut self, high: f64) -> &mut Self {
-        self.high = high;
+        self.0.high = high;
         self
     }
 
@@ -62,7 +46,7 @@ impl Builder {
     ///
     /// The default value is 0.1.
     pub fn initial(&mut self, init: f64) -> &mut Self {
-        self.init = init;
+        self.0.init = init;
         self
     }
 
@@ -80,35 +64,9 @@ impl Builder {
     /// The default value is 0.05, meaning, in very approximate terms, that each new load sample
     /// affects the estimated load by 5%.
     pub fn urgency(&mut self, alpha: f64) -> &mut Self {
-        self.alpha = alpha.max(0.0).min(1.0);
+        self.0.alpha = alpha.max(0.0).min(1.0);
         self
     }
 
-    /// See [`Pool::new`].
-    pub fn build<MS, Target, Request>(
-        &self,
-        make_service: MS,
-        target: Target,
-    ) -> Pool<MS, Target, Request>
-    where
-        MS: MakeService<Target, Request>,
-        MS::MakeError: ::std::error::Error + Send + Sync + 'static,
-        MS::Error: ::std::error::Error + Send + Sync + 'static,
-        MS::Service: Load,
-        Target: Clone,
-    {
-        let d = PoolDiscover {
-            maker: make_service,
-            making: None,
-            target,
-            load: Level::Normal,
-            services: 0,
-        };
-
-        Pool {
-            balance: P2CBalance::new(d),
-            options: *self,
-            ewma: self.init,
-        }
-    }
+    pub fn build(self) -> () {}
 }

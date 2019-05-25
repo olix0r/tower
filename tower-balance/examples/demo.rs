@@ -12,6 +12,7 @@ use tower::{
     Service, ServiceExt,
 };
 use tower_balance as lb;
+use tower_load as load;
 
 const REQUESTS: usize = 50_000;
 const CONCURRENCY: usize = 500;
@@ -54,20 +55,20 @@ fn main() {
     let fut = future::lazy(move || {
         let decay = Duration::from_secs(10);
         let d = gen_disco();
-        let pe = lb::P2CBalance::new(lb::load::WithPeakEwma::new(
+        let pe = lb::P2CBalance::new(load::WithPeakEwma::new(
             d,
             DEFAULT_RTT,
             decay,
-            lb::load::NoInstrument,
+            load::NoInstrument,
         ));
         run("P2C+PeakEWMA...", pe)
     });
 
     let fut = fut.then(move |_| {
         let d = gen_disco();
-        let ll = lb::P2CBalance::new(lb::load::WithPendingRequests::new(
+        let ll = lb::P2CBalance::new(load::WithPendingRequests::new(
             d,
-            lb::load::NoInstrument,
+            load::NoInstrument,
         ));
         run("P2C+LeastLoaded...", ll)
     });
@@ -134,9 +135,9 @@ where
     D: Discover + Send + 'static,
     D::Error: Into<Error>,
     D::Key: Send,
-    D::Service: Service<Req, Response = Rsp, Error = Error> + lb::Load + Send,
+    D::Service: Service<Req, Response = Rsp, Error = Error> + load::Load + Send,
     <D::Service as Service<Req>>::Future: Send,
-    <D::Service as lb::Load>::Metric: std::fmt::Debug,
+    <D::Service as load::Load>::Metric: std::fmt::Debug,
 {
     println!("{}", name);
 
