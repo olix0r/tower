@@ -96,7 +96,13 @@ impl<D: Discover> P2CBalance<D> {
         }
     }
 
+    // Returns the updated index of `orig_idx` after the entry at `rm_idx` was
+    // swap-removed from an IndexMap with `orig_sz` items.
+    //
+    // If `orig_idx` is the same as `rm_idx`, None is returned to indicate that
+    // index cannot be repaired.
     fn repair_index(orig_idx: usize, rm_idx: usize, orig_sz: usize) -> Option<usize> {
+        debug_assert!(orig_sz > orig_idx && orig_sz > rm_idx);
         let repaired = match orig_idx {
             i if i == rm_idx => None,              // removed
             i if i == orig_sz - 1 => Some(rm_idx), // swapped
@@ -112,6 +118,10 @@ impl<D: Discover> P2CBalance<D> {
         repaired
     }
 
+    /// Performs P2C on inner services to find a suitable endpoint.
+    ///
+    /// When this function returns Ready, `self.ready_index` is set with the
+    /// value of a suitable (ready endpoint). When
     fn poll_ready_index<Svc, Request>(&mut self) -> Poll<usize, Svc::Error>
     where
         D: Discover<Service = Svc>,
@@ -189,6 +199,7 @@ impl<D: Discover> P2CBalance<D> {
         }
     }
 
+    /// Accesses an endpoint by index and, if it is ready, returns its current load.
     fn poll_endpoint_index_load<Svc, Request>(
         &mut self,
         index: usize,
