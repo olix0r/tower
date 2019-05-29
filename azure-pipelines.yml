@@ -17,12 +17,15 @@ jobs:
       - tower-buffer
       - tower-discover
       - tower-filter
+      - tower-hedge
       - tower-layer
       - tower-limit
+      - tower-load
       - tower-load-shed
       - tower-reconnect
       - tower-retry
       - tower-service
+      - tower-spawn-ready
       - tower-test
       - tower-timeout
       - tower-util

@@ -1,14 +1,14 @@
 use crate::{
     error::{Error, SpawnError},
-    future::{BackgroundReady, BackgroundReadyExecutor},
+    future::{background_ready, BackgroundReadyExecutor},
 };
-
-use futures::{future, sync::oneshot, try_ready, Async, Future, Poll};
+use futures::{future, try_ready, Async, Future, Poll};
 use std::marker::PhantomData;
 use tokio_executor::DefaultExecutor;
+use tokio_sync::oneshot;
 use tower_service::Service;
 
-/// Adds a buffer in front of an inner service.
+/// Spawns tasks to drive an inner service to readiness.
 ///
 /// See crate level documentation for more details.
 pub struct SpawnReady<T, Request, E>
@@ -51,11 +51,7 @@ where
     /// Creates a new `SpawnReady` wrapping `service`.
     ///
     /// `executor` is used to spawn a new `BackgroundReady` task that is
-    /// dedicated to draining the buffer and dispatching the requests to the
-    /// internal service.
-    ///
-    /// `bound` gives the maximal number of requests that can be queued for the service before
-    /// backpressure is applied to callers.
+    /// dedicated to driving the inner service to readiness.
     pub fn with_executor(service: T, executor: E) -> Self {
         Self {
             executor,
@@ -89,15 +85,15 @@ where
                         return Ok(Async::Ready(()));
                     }
 
-                    let (bg, rx) = BackgroundReady::new(svc.take().expect("illegal state"));
-                    self.executor.spawn(bg).map_err(|_| SpawnError::new())?;
+                    let (bg, rx) = background_ready(svc.take().expect("illegal state"));
+                    self.executor.spawn(bg).map_err(SpawnError::new)?;
 
                     Inner::Future(rx)
                 }
-                Inner::Future(ref mut fut) => match try_ready!(fut.poll()) {
-                    Ok(svc) => Inner::Service(Some(svc)),
-                    Err(e) => return Err(e),
-                },
+                Inner::Future(ref mut fut) => {
+                    let svc = try_ready!(fut.poll())?;
+                    Inner::Service(Some(svc))
+                }
             }
         }
     }

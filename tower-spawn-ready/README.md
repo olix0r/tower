@@ -1,6 +1,6 @@
-# Tower Buffer
+# Tower Spawn Ready
 
-Buffer requests before dispatching to a `Service`.
+Spawn Ready ensures that its inner service is driven to readiness on an executor. Useful with pooling layers that may poll their inner service infrequently.
 
 ## License
 

@@ -14,9 +14,9 @@ license = "MIT"
 readme = "README.md"
 repository = "https://github.com/tower-rs/tower"
 homepage = "https://github.com/tower-rs/tower"
-documentation = "https://docs.rs/tower-buffer/0.1.0"
+documentation = "https://docs.rs/tower-spawn-ready/0.1.0"
 description = """
-Drives Service readiness via a spawned task
+Drives service readiness via a spawned task
 """
 categories = ["asynchronous", "network-programming"]
 edition = "2018"

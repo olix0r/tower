@@ -48,7 +48,13 @@ pub struct P2CBalance<D: Discover> {
 // ===== impl P2CBalance =====
 
 impl<D: Discover> P2CBalance<D> {
-    pub fn new(discover: D) -> Self {
+    pub fn new<Svc, Request>(discover: D) -> Self
+    where
+        D: Discover<Service = Svc>,
+        Svc: Service<Request> + Load,
+        Svc::Error: Into<error::Error>,
+        Svc::Metric: std::fmt::Debug,
+    {
         Self {
             rng: SmallRng::from_entropy(),
             discover,
@@ -60,7 +66,14 @@ impl<D: Discover> P2CBalance<D> {
     /// Initializes a P2C load balancer from the provided randomization source.
     ///
     /// This may be preferable when an application instantiates many balancers.
-    pub fn with_rng<R: Rng>(discover: D, rng: &mut R) -> Result<Self, rand::Error> {
+    pub fn with_rng<Svc, Request, R>(discover: D, rng: &mut R) -> Result<Self, rand::Error>
+    where
+        R: Rng,
+        D: Discover<Service = Svc>,
+        Svc: Service<Request> + Load,
+        Svc::Error: Into<error::Error>,
+        Svc::Metric: std::fmt::Debug,
+    {
         let rng = SmallRng::from_rng(rng)?;
         Ok(Self {
             rng,
@@ -127,6 +140,7 @@ impl<D: Discover> P2CBalance<D> {
         D: Discover<Service = Svc>,
         Svc: Service<Request> + Load,
         Svc::Error: Into<error::Error>,
+        Svc::Metric: std::fmt::Debug,
     {
         match self.endpoints.len() {
             0 => Ok(Async::NotReady),
@@ -221,6 +235,7 @@ where
     D::Error: Into<error::Error>,
     Svc: Service<Request> + Load,
     Svc::Error: Into<error::Error>,
+    Svc::Metric: std::fmt::Debug,
 {
     type Response = <D::Service as Service<Request>>::Response;
     type Error = error::Error;
