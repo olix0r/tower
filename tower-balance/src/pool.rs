@@ -185,6 +185,8 @@ impl Builder {
     ) -> Pool<MS, Target, Request>
     where
         MS: MakeService<Target, Request>,
+        MS::Service: Load,
+        <MS::Service as Load>::Metric: std::fmt::Debug,
         MS::MakeError: ::std::error::Error + Send + Sync + 'static,
         MS::Error: ::std::error::Error + Send + Sync + 'static,
         Target: Clone,
@@ -221,6 +223,8 @@ where
 impl<MS, Target, Request> Pool<MS, Target, Request>
 where
     MS: MakeService<Target, Request>,
+    MS::Service: Load,
+    <MS::Service as Load>::Metric: std::fmt::Debug,
     MS::MakeError: ::std::error::Error + Send + Sync + 'static,
     MS::Error: ::std::error::Error + Send + Sync + 'static,
     Target: Clone,
@@ -240,6 +244,7 @@ impl<MS, Target, Request> Service<Request> for Pool<MS, Target, Request>
 where
     MS: MakeService<Target, Request>,
     MS::Service: Load,
+    <MS::Service as Load>::Metric: std::fmt::Debug,
     MS::MakeError: ::std::error::Error + Send + Sync + 'static,
     MS::Error: ::std::error::Error + Send + Sync + 'static,
     Target: Clone,
