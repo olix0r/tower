@@ -4,6 +4,7 @@
 
 pub mod error;
 pub mod future;
+pub mod pool;
 
 #[cfg(test)]
 mod test;
@@ -68,6 +69,11 @@ impl<D: Discover> P2CBalance<D> {
             ready_index: None,
             endpoints: IndexMap::default(),
         })
+    }
+
+    /// Returns the number of endpoints currently tracked by the balancer.
+    pub fn len(&self) -> usize {
+        self.endpoints.len()
     }
 
     /// Polls `discover` for updates, adding new items to `not_ready`.
