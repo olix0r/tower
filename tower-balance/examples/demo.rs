@@ -14,7 +14,7 @@ use tower::{
 use tower_balance as lb;
 use tower_load as load;
 
-const REQUESTS: usize = 50_000;
+const REQUESTS: usize = 100_000;
 const CONCURRENCY: usize = 500;
 const DEFAULT_RTT: Duration = Duration::from_millis(30);
 static ENDPOINT_CAPACITY: usize = CONCURRENCY;
@@ -55,7 +55,7 @@ fn main() {
     let fut = future::lazy(move || {
         let decay = Duration::from_secs(10);
         let d = gen_disco();
-        let pe = lb::P2CBalance::new(load::PeakEwmaDiscover::new(
+        let pe = lb::P2CBalance::from_entropy(load::PeakEwmaDiscover::new(
             d,
             DEFAULT_RTT,
             decay,
@@ -66,8 +66,8 @@ fn main() {
 
     let fut = fut.then(move |_| {
         let d = gen_disco();
-        let ll = lb::P2CBalance::new(load::PendingRequestsDiscover::new(d, load::NoInstrument));
-        run("P2C+LeastLoaded", ll)
+        let ll = lb::P2CBalance::from_entropy(load::PendingRequestsDiscover::new(d, load::NoInstrument));
+        run("P2C+LeastLoaded...", ll)
     });
 
     rt.spawn(fut);

@@ -200,7 +200,7 @@ impl Builder {
         };
 
         Pool {
-            balance: P2CBalance::new(d),
+            balance: P2CBalance::from_entropy(d),
             options: *self,
             ewma: self.init,
         }
@@ -293,6 +293,6 @@ where
     }
 
     fn call(&mut self, req: Request) -> Self::Future {
-        Service::call(&mut self.balance, req)
+        self.balance.call(req)
     }
 }

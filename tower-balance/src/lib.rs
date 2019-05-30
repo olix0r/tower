@@ -1,19 +1,25 @@
+//! A load balancing middleware.
+
 #![doc(html_root_url = "https://docs.rs/tower-balance/0.1.0")]
+#![deny(missing_docs)]
 #![deny(rust_2018_idioms)]
 #![allow(elided_lifetimes_in_paths)]
+#![deny(warnings)]
 
 pub mod error;
-pub mod future;
+//pub mod future;
+mod layer;
 pub mod pool;
+
+pub use layer::P2CBalanceLayer;
 
 #[cfg(test)]
 mod test;
 
-use self::future::ResponseFuture;
-use futures::{try_ready, Async, Poll};
+use futures::{future, try_ready, Async, Future, Poll};
 use indexmap::IndexMap;
 use log::{debug, info, trace};
-use rand::{rngs::SmallRng, FromEntropy, Rng, SeedableRng};
+use rand::{rngs::SmallRng, FromEntropy};
 use std::cmp;
 use tower_discover::{Change, Discover};
 use tower_load::Load;
@@ -49,39 +55,19 @@ pub struct P2CBalance<D: Discover> {
 // ===== impl P2CBalance =====
 
 impl<D: Discover> P2CBalance<D> {
-    pub fn new<Svc, Request>(discover: D) -> Self
-    where
-        D: Discover<Service = Svc>,
-        Svc: Service<Request> + Load,
-        Svc::Error: Into<error::Error>,
-        Svc::Metric: std::fmt::Debug,
-    {
-        Self {
-            rng: SmallRng::from_entropy(),
-            discover,
-            ready_index: None,
-            endpoints: IndexMap::default(),
-        }
+    /// Initializes a P2C load balancer from the OS's entropy.
+    pub fn from_entropy(discover: D) -> Self {
+        Self::from_rng(discover, SmallRng::from_entropy())
     }
 
     /// Initializes a P2C load balancer from the provided randomization source.
-    ///
-    /// This may be preferable when an application instantiates many balancers.
-    pub fn with_rng<Svc, Request, R>(discover: D, rng: &mut R) -> Result<Self, rand::Error>
-    where
-        R: Rng,
-        D: Discover<Service = Svc>,
-        Svc: Service<Request> + Load,
-        Svc::Error: Into<error::Error>,
-        Svc::Metric: std::fmt::Debug,
-    {
-        let rng = SmallRng::from_rng(rng)?;
-        Ok(Self {
+    pub fn from_rng(discover: D, rng: SmallRng) -> Self {
+        Self {
             rng,
             discover,
             ready_index: None,
             endpoints: IndexMap::default(),
-        })
+        }
     }
 
     /// Returns the number of endpoints currently tracked by the balancer.
@@ -92,14 +78,14 @@ impl<D: Discover> P2CBalance<D> {
     /// Polls `discover` for updates, adding new items to `not_ready`.
     ///
     /// Removals may alter the order of either `ready` or `not_ready`.
-    fn poll_discover(&mut self) -> Poll<(), error::Balance>
+    fn poll_discover(&mut self) -> Poll<(), error::Discover>
     where
         D::Error: Into<error::Error>,
     {
         debug!("updating from discover");
 
         loop {
-            match try_ready!(self.discover.poll().map_err(|e| error::Balance(e.into()))) {
+            match try_ready!(self.discover.poll().map_err(|e| error::Discover(e.into()))) {
                 Change::Insert(key, svc) => drop(self.endpoints.insert(key, svc)),
                 Change::Remove(rm_key) => {
                     // Update the ready index to account for reordering of endpoints.
@@ -245,7 +231,8 @@ where
 {
     type Response = <D::Service as Service<Request>>::Response;
     type Error = error::Error;
-    type Future = ResponseFuture<<D::Service as Service<Request>>::Future>;
+    type Future =
+        future::MapErr<<D::Service as Service<Request>>::Future, fn(Svc::Error) -> error::Error>;
 
     /// Prepares the balancer to process a request.
     ///
@@ -294,7 +281,6 @@ where
             .get_index_mut(index)
             .expect("invalid ready index");
 
-        let fut = svc.call(request);
-        ResponseFuture::new(fut)
+        svc.call(request).map_err(Into::into)
     }
 }
