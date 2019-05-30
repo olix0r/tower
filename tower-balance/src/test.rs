@@ -1,7 +1,7 @@
 use futures::{Async, Future};
 use tower_discover::ServiceList;
-use tower_service::Service;
 use tower_load as load;
+use tower_service::Service;
 use tower_test::mock;
 
 use crate::*;
@@ -129,7 +129,8 @@ fn two_endpoints_with_equal_weight() {
         handle_b.allow(1);
         assert_ready!(svc, "must be ready after one endpoint is removed");
         assert_eq!(
-            svc.endpoints.len(), 1,
+            svc.endpoints.len(),
+            1,
             "balancer must drop failed endpoints",
         );
     });

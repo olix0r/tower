@@ -55,7 +55,7 @@ fn main() {
     let fut = future::lazy(move || {
         let decay = Duration::from_secs(10);
         let d = gen_disco();
-        let pe = lb::P2CBalance::new(load::WithPeakEwma::new(
+        let pe = lb::P2CBalance::new(load::PeakEwmaDiscover::new(
             d,
             DEFAULT_RTT,
             decay,
@@ -66,11 +66,8 @@ fn main() {
 
     let fut = fut.then(move |_| {
         let d = gen_disco();
-        let ll = lb::P2CBalance::new(load::WithPendingRequests::new(
-            d,
-            load::NoInstrument,
-        ));
-        run("P2C+LeastLoaded...", ll)
+        let ll = lb::P2CBalance::new(load::PendingRequestsDiscover::new(d, load::NoInstrument));
+        run("P2C+LeastLoaded", ll)
     });
 
     rt.spawn(fut);
@@ -80,6 +77,7 @@ fn main() {
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
 type Key = usize;
+
 struct Disco<S>(Vec<(Key, S)>);
 
 impl<S> Discover for Disco<S>

@@ -1,6 +1,6 @@
-# Tower Balance
+# Tower Load
 
-Balance load across a set of uniform services.
+Provides strategies for measuring a service's load.
 
 ## License
 

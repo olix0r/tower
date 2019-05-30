@@ -49,7 +49,13 @@ pub struct P2CBalance<D: Discover> {
 // ===== impl P2CBalance =====
 
 impl<D: Discover> P2CBalance<D> {
-    pub fn new(discover: D) -> Self {
+    pub fn new<Svc, Request>(discover: D) -> Self
+    where
+        D: Discover<Service = Svc>,
+        Svc: Service<Request> + Load,
+        Svc::Error: Into<error::Error>,
+        Svc::Metric: std::fmt::Debug,
+    {
         Self {
             rng: SmallRng::from_entropy(),
             discover,
@@ -61,7 +67,14 @@ impl<D: Discover> P2CBalance<D> {
     /// Initializes a P2C load balancer from the provided randomization source.
     ///
     /// This may be preferable when an application instantiates many balancers.
-    pub fn with_rng<R: Rng>(discover: D, rng: &mut R) -> Result<Self, rand::Error> {
+    pub fn with_rng<Svc, Request, R>(discover: D, rng: &mut R) -> Result<Self, rand::Error>
+    where
+        R: Rng,
+        D: Discover<Service = Svc>,
+        Svc: Service<Request> + Load,
+        Svc::Error: Into<error::Error>,
+        Svc::Metric: std::fmt::Debug,
+    {
         let rng = SmallRng::from_rng(rng)?;
         Ok(Self {
             rng,
@@ -102,7 +115,13 @@ impl<D: Discover> P2CBalance<D> {
         }
     }
 
+    // Returns the updated index of `orig_idx` after the entry at `rm_idx` was
+    // swap-removed from an IndexMap with `orig_sz` items.
+    //
+    // If `orig_idx` is the same as `rm_idx`, None is returned to indicate that
+    // index cannot be repaired.
     fn repair_index(orig_idx: usize, rm_idx: usize, orig_sz: usize) -> Option<usize> {
+        debug_assert!(orig_sz > orig_idx && orig_sz > rm_idx);
         let repaired = match orig_idx {
             i if i == rm_idx => None,              // removed
             i if i == orig_sz - 1 => Some(rm_idx), // swapped
@@ -118,11 +137,16 @@ impl<D: Discover> P2CBalance<D> {
         repaired
     }
 
+    /// Performs P2C on inner services to find a suitable endpoint.
+    ///
+    /// When this function returns Ready, `self.ready_index` is set with the
+    /// value of a suitable (ready endpoint). When
     fn poll_ready_index<Svc, Request>(&mut self) -> Poll<usize, Svc::Error>
     where
         D: Discover<Service = Svc>,
         Svc: Service<Request> + Load,
         Svc::Error: Into<error::Error>,
+        Svc::Metric: std::fmt::Debug,
     {
         match self.endpoints.len() {
             0 => Ok(Async::NotReady),
@@ -195,6 +219,7 @@ impl<D: Discover> P2CBalance<D> {
         }
     }
 
+    /// Accesses an endpoint by index and, if it is ready, returns its current load.
     fn poll_endpoint_index_load<Svc, Request>(
         &mut self,
         index: usize,
@@ -216,6 +241,7 @@ where
     D::Error: Into<error::Error>,
     Svc: Service<Request> + Load,
     Svc::Error: Into<error::Error>,
+    Svc::Metric: std::fmt::Debug,
 {
     type Response = <D::Service as Service<Request>>::Response;
     type Error = error::Error;

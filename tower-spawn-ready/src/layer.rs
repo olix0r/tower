@@ -4,7 +4,7 @@ use tokio_executor::DefaultExecutor;
 use tower_layer::Layer;
 use tower_service::Service;
 
-/// SpawnReady requests with a bounded buffer
+/// Spawns tasks to drive its inner service to readiness.
 pub struct SpawnReadyLayer<Request, E = DefaultExecutor> {
     executor: E,
     _p: PhantomData<fn(Request)>,
