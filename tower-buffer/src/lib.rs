@@ -11,6 +11,7 @@
 
 pub mod error;
 pub mod future;
+mod hangup;
 mod layer;
 mod message;
 mod service;

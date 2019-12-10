@@ -1,4 +1,5 @@
 use crate::{
+    hangup,
     error::{Error, SpawnError},
     future::ResponseFuture,
     message::Message,
@@ -19,6 +20,7 @@ where
 {
     tx: mpsc::Sender<Message<Request, T::Future>>,
     worker: Option<Handle>,
+    _hangup: hangup::Handle,
 }
 
 impl<T, Request> Buffer<T, Request>
@@ -56,8 +58,9 @@ where
         E: WorkerExecutor<T, Request>,
     {
         let (tx, rx) = mpsc::channel(bound);
-        let worker = Worker::spawn(service, rx, executor);
-        Buffer { tx, worker }
+        let (_hangup, hangup_rx) = hangup::channel();
+        let worker = Worker::spawn(service, rx, hangup_rx, executor);
+        Buffer { tx, worker, _hangup }
     }
 
     fn get_worker_error(&self) -> Error {
@@ -126,6 +129,7 @@ where
         Self {
             tx: self.tx.clone(),
             worker: self.worker.clone(),
+            _hangup: self._hangup.clone(),
         }
     }
 }

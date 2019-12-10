@@ -1,4 +1,5 @@
 use crate::{
+    hangup,
     error::{Closed, Error, ServiceError},
     message::Message,
 };
@@ -26,6 +27,7 @@ where
     finish: bool,
     failed: Option<ServiceError>,
     handle: Handle,
+    hangup: hangup::Receiver,
 }
 
 /// Get the error out
@@ -57,6 +59,7 @@ where
     pub(crate) fn spawn<E>(
         service: T,
         rx: mpsc::Receiver<Message<Request, T::Future>>,
+        hangup: hangup::Receiver,
         executor: &mut E,
     ) -> Option<Handle>
     where
@@ -73,6 +76,7 @@ where
             rx,
             service,
             handle: handle.clone(),
+            hangup,
         };
 
         match executor.spawn(worker) {
@@ -89,6 +93,13 @@ where
         if self.finish {
             // We've already received None and are shutting down
             return Ok(Async::Ready(None));
+        }
+
+        match self.hangup.poll() {
+            Ok(Async::NotReady) => {},
+            Ok(Async::Ready(())) | Err(()) => {
+                return Ok(Async::Ready(None))
+            }
         }
 
         tracing::trace!("worker polling for next message");
